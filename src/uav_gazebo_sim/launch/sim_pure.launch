@@ -1,0 +1,40 @@
+<launch>
+    <!-- 全局参数：使用仿真时间 -->
+    <param name="/use_sim_time" value="true"/>
+
+    <!-- 1. 启动Gazebo并加载纯空地环境 -->
+    <include file="$(find gazebo_ros)/launch/empty_world.launch">
+        <arg name="world_name" value="$(find uav_gazebo_sim)/worlds/empty_ground.world"/>
+        <arg name="gui" value="true"/>
+        <arg name="paused" value="false"/>
+        <arg name="verbose" value="false"/>
+    </include>
+
+    <!-- 2. 启动PX4 SITL仿真（加载我们的极简无人机模型） -->
+    <include file="$(find px4)/launch/px4.launch">
+        <arg name="vehicle" value="iris"/>
+        <arg name="sdf" value="$(find uav_gazebo_sim)/urdf/uav_simple.urdf.xacro"/>
+        <arg name="interactive" value="false"/>
+    </include>
+
+    <!-- 3. 启动MAVROS（连接PX4仿真飞控） -->
+    <include file="$(find mavros)/launch/px4.launch">
+        <arg name="fcu_url" value="udp://:14540@127.0.0.1:14557"/>
+    </include>
+
+    <!-- 4. 启动FAST-LIO2 SLAM（用仿真Mid360的点云） -->
+    <include file="$(find FAST_LIO2)/launch/launch_mid360.launch">
+        <arg name="pointcloud_topic" value="/livox/lidar"/>
+        <arg name="imu_topic" value="/mavros/imu/data"/>
+    </include>
+
+    <!-- 5. 发布雷达-机身静态TF（和真机完全一致） -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="lidar_tf" 
+          args="0 0 0.1 0 0 0 base_link livox_frame"/>
+
+    <!-- 6. 启动核心飞控控制节点（含地面站TCP服务） -->
+    <include file="$(find uav_slam_controller)/launch/slam_controller.launch"/>
+
+    <!-- 7. 可选：启动RViz查看SLAM建图和位姿 -->
+    <node name="rviz" pkg="rviz" type="rviz" required="false" output="screen"/>
+</launch>

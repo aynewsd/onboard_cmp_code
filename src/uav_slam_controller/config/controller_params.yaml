@@ -1,0 +1,10 @@
+# 飞控核心参数
+takeoff_height: 2.0          # 起飞悬停高度，单位：米
+control_rate: 20.0            # 飞控控制频率，单位：Hz
+
+# TCP地面站通信参数
+tcp_port: 8888                 # 监听端口，与用户示例完全一致
+position_send_interval: 1.0    # 位置上报周期，单位：秒，与用户示例一致
+
+# 路径航点参数
+waypoint_reach_threshold: 0.3  # 航点到达阈值（水平距离），单位：米

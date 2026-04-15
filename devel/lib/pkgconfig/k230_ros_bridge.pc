@@ -1,0 +1,8 @@
+prefix=/home/demo/uav_ws/devel
+
+Name: k230_ros_bridge
+Description: Description of k230_ros_bridge
+Version: 0.0.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 

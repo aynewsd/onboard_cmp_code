@@ -1,0 +1,8 @@
+prefix=/home/demo/uav_ws/install
+
+Name: uav_slam_controller
+Description: Description of uav_slam_controller
+Version: 0.0.1
+Cflags: -I${prefix}/include -I/usr/include/jsoncpp
+Libs: -L${prefix}/lib -ljsoncpp
+Requires: roscpp std_msgs geometry_msgs nav_msgs sensor_msgs mavros_msgs tf2 tf2_ros tf2_geometry_msgs

@@ -1,0 +1,10 @@
+<launch>
+    <!-- 核心控制节点 -->
+    <node name="slam_controller_node" pkg="uav_slam_controller" type="slam_controller_node" output="screen">
+        <rosparam file="$(find uav_slam_controller)/config/controller_params.yaml" command="load"/>
+    </node>
+
+    <!-- 激光雷达与机体的静态TF（Mid360安装外参，真机校准后修改） -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="lidar_tf" 
+          args="0 0 0.1 0 0 0 base_link livox_frame"/>
+</launch>

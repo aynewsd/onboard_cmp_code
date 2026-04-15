@@ -1,0 +1,111 @@
+<?xml version="1.0"?>
+<robot name="uav_simple" xmlns:xacro="http://www.ros.org/wiki/Xacro">
+  <xacro:property name="M_PI" value="3.141592653589793"/>
+
+  <!-- 核心机身（base_link，和PX4 iris模型兼容） -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.15" length="0.05"/>
+      </geometry>
+      <material name="blue">
+        <color rgba="0.0 0.0 1.0 0.8"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.15" length="0.05"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="1.0"/>
+      <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.02"/>
+    </inertial>
+  </link>
+
+  <!-- 仿真Mid360激光雷达（和真实雷达话题完全一致） -->
+  <xacro:property name="lidar_x" value="0.0"/>
+  <xacro:property name="lidar_y" value="0.0"/>
+  <xacro:property name="lidar_z" value="0.1"/>
+  <link name="livox_frame">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.08 0.08 0.05"/>
+      </geometry>
+      <material name="gray">
+        <color rgba="0.5 0.5 0.5 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.08 0.08 0.05"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.2"/>
+      <inertia ixx="0.0001" ixy="0.0" ixz="0.0" iyy="0.0001" iyz="0.0" izz="0.0002"/>
+    </inertial>
+  </link>
+  <joint name="lidar_joint" type="fixed">
+    <origin xyz="${lidar_x} ${lidar_y} ${lidar_z}" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="livox_frame"/>
+  </joint>
+
+  <!-- Gazebo激光雷达插件（输出话题和真实Mid360完全一致：/livox/lidar） -->
+  <gazebo reference="livox_frame">
+    <sensor type="ray" name="livox_lidar">
+      <pose>0 0 0 0 0 0</pose>
+      <visualize>false</visualize> <!-- 不需要看激光线就设为false，提升性能 -->
+      <update_rate>10</update_rate> <!-- 和真实Mid360帧率一致 -->
+      <ray>
+        <scan>
+          <horizontal>
+            <samples>100</samples>
+            <resolution>1</resolution>
+            <min_angle>-${M_PI}</min_angle>
+            <max_angle>${M_PI}</max_angle>
+          </horizontal>
+          <vertical>
+            <samples>32</samples>
+            <resolution>1</resolution>
+            <min_angle>-${M_PI/6}</min_angle>
+            <max_angle>${M_PI/6}</max_angle>
+          </vertical>
+        </scan>
+        <range>
+          <min>0.1</min>
+          <max>40.0</max>
+          <resolution>0.01</resolution>
+        </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.02</stddev>
+        </noise>
+      </ray>
+      <plugin name="gazebo_ros_livox" filename="libgazebo_ros_ray_sensor.so">
+        <ros>
+          <remapping>/out:=/livox/lidar</remapping>
+          <argument>~/frame_id:=livox_frame</argument>
+        </ros>
+        <output_type>PointCloud2</output_type>
+        <frame_name>livox_frame</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <!-- 材质定义 -->
+  <material name="blue">
+    <color rgba="0.0 0.0 1.0 0.8"/>
+  </material>
+  <material name="gray">
+    <color rgba="0.5 0.5 0.5 1.0"/>
+  </material>
+</robot>

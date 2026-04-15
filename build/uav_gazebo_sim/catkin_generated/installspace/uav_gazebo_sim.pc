@@ -1,0 +1,8 @@
+prefix=/home/demo/uav_ws/install
+
+Name: uav_gazebo_sim
+Description: Description of uav_gazebo_sim
+Version: 0.0.1
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: roscpp std_msgs geometry_msgs urdf xacro gazebo_ros gazebo_plugins
