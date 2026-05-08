@@ -1,0 +1,57 @@
+# Core topics
+odom_topic: "/Odometry"  # default: FastLIO output
+
+# Control rates / thresholds
+control_rate: 20.0                # Hz (should be >= 2Hz)
+reach_tolerance_xy: 0.25          # m
+reach_tolerance_z: 0.20           # m
+prestream_time_s: 2.0             # s, stream setpoints before OFFBOARD
+
+# Speed limiting (setpoint interpolation)
+max_xy_speed: 1.0                 # m/s
+max_z_speed: 0.6                  # m/s
+
+# Heights (meters)
+cruise_height: 1.4                # must be >= 1.2
+drop_height: 0.6                  # must be <= 0.8
+ring_height: 1.6
+
+# Mission timing (seconds)
+segment_timeout_s: 60.0           # per segment travel/hold timeout
+circle_duration_s: 60.0           # obstacle circling duration (test: 60s, real: 300s)
+circle_radius_m: 1.2              # obstacle circling radius
+circle_period_s: 10.0             # seconds per full circle
+hover_qr_s: 3.0
+hover_image_s: 3.0
+hover_special_s: 3.0
+hover_ring_view_s: 5.0
+servo_open_time_s: 0.8
+
+# Failsafe behavior
+failsafe_hover_timeout_s: 10.0    # hover waiting for RC takeover, then LAND
+odom_timeout_s: 0.5               # if no odom update for this long -> failsafe
+
+# Map-coordinate conversion (mm -> m)
+# Map axes aligned with UAV at start; Y is inverted when converting (per requirement).
+map_origin_mm: [1500.0, 3000.0]   # takeoff point in map coordinates (mm)
+map_to_enu_y_inverted: true
+
+# Mission points in map coordinates (mm)
+takeoff_mm: [1500.0, 3000.0]
+obstacle_mm: [5800.0, 3000.0]
+qrcode_mm: [3300.0, 3000.0]
+
+image_targets_mm:
+  - [5100.0, 4600.0]
+  - [3300.0, 4600.0]
+  - [5100.0, 1400.0]
+  - [3300.0, 1400.0]
+
+special_target_mm: [7500.0, 2000.0]
+ring_view_mm: [7500.0, 4000.0]
+ring_default_mm: [7500.0, 4600.0]
+
+land_left_mm: [1500.0, 1400.0]
+land_right_mm: [1500.0, 4600.0]
+default_land_side: "left"         # "left" or "right" (QR not implemented yet)
+

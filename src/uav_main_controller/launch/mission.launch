@@ -1,0 +1,6 @@
+<launch>
+  <node name="mission_controller_node" pkg="uav_main_controller" type="mission_controller_node" output="screen">
+    <rosparam file="$(find uav_main_controller)/config/mission.yaml" command="load"/>
+  </node>
+</launch>
+

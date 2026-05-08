@@ -442,8 +442,23 @@ controller_manager_msgs_DIR:PATH=/opt/ros/noetic/share/controller_manager_msgs/c
 //The directory containing a CMake configuration file for cpp_common.
 cpp_common_DIR:PATH=/opt/ros/noetic/share/cpp_common/cmake
 
+//The directory containing a CMake configuration file for diagnostic_msgs.
+diagnostic_msgs_DIR:PATH=/opt/ros/noetic/share/diagnostic_msgs/cmake
+
+//The directory containing a CMake configuration file for diagnostic_updater.
+diagnostic_updater_DIR:PATH=/opt/ros/noetic/share/diagnostic_updater/cmake
+
 //The directory containing a CMake configuration file for dynamic_reconfigure.
 dynamic_reconfigure_DIR:PATH=/opt/ros/noetic/share/dynamic_reconfigure/cmake
+
+//The directory containing a CMake configuration file for eigen_conversions.
+eigen_conversions_DIR:PATH=/opt/ros/noetic/share/eigen_conversions/cmake
+
+//Value Computed by CMake
+fastlio_px4_waypoint_BINARY_DIR:STATIC=/home/demo/uav_ws/build/fastlio_px4_waypoint
+
+//Value Computed by CMake
+fastlio_px4_waypoint_SOURCE_DIR:STATIC=/home/demo/uav_ws/src/fastlio_px4_waypoint
 
 //The directory containing a CMake configuration file for gazebo_msgs.
 gazebo_msgs_DIR:PATH=/opt/ros/noetic/share/gazebo_msgs/cmake
@@ -551,6 +566,12 @@ laser_pointer_driver_SOURCE_DIR:STATIC=/home/demo/uav_ws/src/laser_pointer_drive
 //Path to a library.
 lib:FILEPATH=/opt/ros/noetic/lib/libcamera_calibration_parsers.so
 
+//The directory containing a CMake configuration file for libmavconn.
+libmavconn_DIR:PATH=/opt/ros/noetic/share/libmavconn/cmake
+
+//The directory containing a CMake configuration file for mavros.
+mavros_DIR:PATH=/opt/ros/noetic/share/mavros/cmake
+
 //The directory containing a CMake configuration file for mavros_msgs.
 mavros_msgs_DIR:PATH=/opt/ros/noetic/share/mavros_msgs/cmake
 
@@ -614,6 +635,15 @@ rostime_DIR:PATH=/opt/ros/noetic/share/rostime/cmake
 //The directory containing a CMake configuration file for sensor_msgs.
 sensor_msgs_DIR:PATH=/opt/ros/noetic/share/sensor_msgs/cmake
 
+//Value Computed by CMake
+servo_controller_BINARY_DIR:STATIC=/home/demo/uav_ws/build/servo_controller
+
+//The directory containing a CMake configuration file for servo_controller.
+servo_controller_DIR:PATH=/home/demo/uav_ws/devel/share/servo_controller/cmake
+
+//Value Computed by CMake
+servo_controller_SOURCE_DIR:STATIC=/home/demo/uav_ws/src/servo_controller
+
 //The directory containing a CMake configuration file for smclib.
 smclib_DIR:PATH=/opt/ros/noetic/share/smclib/cmake
 
@@ -658,6 +688,12 @@ uav_gazebo_sim_BINARY_DIR:STATIC=/home/demo/uav_ws/build/uav_gazebo_sim
 
 //Value Computed by CMake
 uav_gazebo_sim_SOURCE_DIR:STATIC=/home/demo/uav_ws/src/uav_gazebo_sim
+
+//Value Computed by CMake
+uav_main_controller_BINARY_DIR:STATIC=/home/demo/uav_ws/build/uav_main_controller
+
+//Value Computed by CMake
+uav_main_controller_SOURCE_DIR:STATIC=/home/demo/uav_ws/src/uav_main_controller
 
 //Value Computed by CMake
 uav_slam_controller_BINARY_DIR:STATIC=/home/demo/uav_ws/build/uav_slam_controller
@@ -828,7 +864,7 @@ CMAKE_MODULE_LINKER_FLAGS_RELWITHDEBINFO-ADVANCED:INTERNAL=1
 //ADVANCED property for variable: CMAKE_NM
 CMAKE_NM-ADVANCED:INTERNAL=1
 //number of local generators
-CMAKE_NUMBER_OF_MAKEFILES:INTERNAL=7
+CMAKE_NUMBER_OF_MAKEFILES:INTERNAL=10
 //ADVANCED property for variable: CMAKE_OBJCOPY
 CMAKE_OBJCOPY-ADVANCED:INTERNAL=1
 //ADVANCED property for variable: CMAKE_OBJDUMP

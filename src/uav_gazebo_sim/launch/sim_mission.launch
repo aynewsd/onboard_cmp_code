@@ -1,0 +1,51 @@
+<launch>
+  <!-- Simulation time -->
+  <param name="/use_sim_time" value="true"/>
+
+  <!-- Args -->
+  <arg name="gui" default="true"/>
+  <arg name="vehicle" default="iris"/>
+  <arg name="fcu_url" default="udp://:14540@127.0.0.1:14557"/>
+
+  <!-- For mission controller -->
+  <arg name="odom_topic" default="/mavros/local_position/odom"/>
+  <arg name="use_fastlio" default="false"/>
+
+  <!-- 1) Gazebo world -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(find uav_gazebo_sim)/worlds/empty_ground.world"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="paused" value="false"/>
+    <arg name="verbose" value="false"/>
+  </include>
+
+  <!-- 2) PX4 SITL -->
+  <include file="$(find px4)/launch/px4.launch">
+    <arg name="vehicle" value="$(arg vehicle)"/>
+    <arg name="sdf" value="$(find uav_gazebo_sim)/urdf/uav_simple.urdf.xacro"/>
+    <arg name="interactive" value="false"/>
+  </include>
+
+  <!-- 3) MAVROS -->
+  <include file="$(find mavros)/launch/px4.launch">
+    <arg name="fcu_url" value="$(arg fcu_url)"/>
+  </include>
+
+  <!-- 4) Optional: FAST-LIO2 in simulation -->
+  <group if="$(arg use_fastlio)">
+    <include file="$(find FAST_LIO2)/launch/launch_mid360.launch">
+      <arg name="pointcloud_topic" value="/livox/lidar"/>
+      <arg name="imu_topic" value="/mavros/imu/data"/>
+    </include>
+    <node pkg="tf2_ros" type="static_transform_publisher" name="lidar_tf"
+          args="0 0 0.1 0 0 0 base_link livox_frame"/>
+  </group>
+
+  <!-- 5) Mission controller -->
+  <node name="mission_controller_node" pkg="uav_main_controller" type="mission_controller_node" output="screen">
+    <rosparam file="$(find uav_main_controller)/config/mission.yaml" command="load"/>
+    <!-- Override for simulation or custom odometry source -->
+    <param name="odom_topic" value="$(arg odom_topic)"/>
+  </node>
+</launch>
+

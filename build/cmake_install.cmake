@@ -131,7 +131,10 @@ endif()
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for each subdirectory.
   include("/home/demo/uav_ws/build/gtest/cmake_install.cmake")
+  include("/home/demo/uav_ws/build/servo_controller/cmake_install.cmake")
+  include("/home/demo/uav_ws/build/fastlio_px4_waypoint/cmake_install.cmake")
   include("/home/demo/uav_ws/build/target_aiming_system/cmake_install.cmake")
+  include("/home/demo/uav_ws/build/uav_main_controller/cmake_install.cmake")
   include("/home/demo/uav_ws/build/uav_slam_controller/cmake_install.cmake")
   include("/home/demo/uav_ws/build/uav_gazebo_sim/cmake_install.cmake")
 

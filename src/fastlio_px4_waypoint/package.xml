@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>fastlio_px4_waypoint</name>
+  <version>0.0.1</version>
+  <description>FastLIO+PX4单航点飞行节点</description>
+  <maintainer email="your_email@example.com">Your Name</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <!-- 只保留这一组depend，删除重复的exec_depend -->
+  <depend>roscpp</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>mavros_msgs</depend>
+  <depend>mavros</depend>
+</package>

@@ -5,6 +5,9 @@
 # This file includes the relevant testing commands required for 
 # testing this directory and lists subdirectories to be tested as well.
 subdirs("gtest")
+subdirs("servo_controller")
+subdirs("fastlio_px4_waypoint")
 subdirs("target_aiming_system")
+subdirs("uav_main_controller")
 subdirs("uav_slam_controller")
 subdirs("uav_gazebo_sim")

@@ -1,0 +1,10 @@
+<launch>
+    <!-- 加载参数文件 -->
+    <rosparam file="$(find fastlio_px4_waypoint)/config/waypoint_params.yaml" command="load" />
+
+    <!-- 启动航点飞行节点 -->
+    <node name="fastlio_px4_waypoint_node" 
+          pkg="fastlio_px4_waypoint" 
+          type="fastlio_px4_waypoint_node" 
+          output="screen" />
+</launch>
