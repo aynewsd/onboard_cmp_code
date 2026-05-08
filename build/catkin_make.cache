@@ -1,2 +1,0 @@
-fastlio_px4_waypoint:servo_controller:target_aiming_system:uav_gazebo_sim:uav_main_controller:uav_slam_controller
--DCATKIN_DEVEL_PREFIX=/home/demo/uav_ws/devel -DCMAKE_INSTALL_PREFIX=/home/demo/uav_ws/install -G Unix Makefiles

@@ -1,3 +1,17 @@
-build
-devel
-.vscode
+/build/
+/devel/
+/install/
+/logs/
+/.catkin_tools/
+/.vscode/
+
+# Common ROS/catkin artifacts
+/compile_commands.json
+*.bag
+*.bag.active
+*.bag.orig
+*.log
+
+# Editor/OS noise
+.DS_Store
+Thumbs.db

@@ -1,8 +1,0 @@
-prefix=/home/demo/uav_ws/install
-
-Name: target_aiming_system
-Description: Description of target_aiming_system
-Version: 0.0.0
-Cflags: 
-Libs: -L${prefix}/lib 
-Requires: 
