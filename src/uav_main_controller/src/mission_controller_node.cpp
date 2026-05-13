@@ -108,6 +108,8 @@ MissionController::MissionController(ros::NodeHandle& nh) : nh_(nh)
   setpoint_ = makePose(0.0, 0.0, cruise_height_, 0.0);
   goal_pose_ = setpoint_;
   hold_pose_ = setpoint_;
+  last_offboard_request_time_ = ros::Time(0);
+  resume_phase_ = Phase::TAKEOFF;
 
   publishMissionState("INIT");
 }
@@ -239,6 +241,8 @@ void MissionController::enterPhase(Phase next, const std::string& reason)
 
 void MissionController::triggerFailsafeHover(const std::string& reason)
 {
+  resume_phase_ = phase_;
+  last_offboard_request_time_ = ros::Time(0);
   hold_pose_ = makePose(current_odom_.pose.pose.position.x,
                         current_odom_.pose.pose.position.y,
                         current_odom_.pose.pose.position.z,
@@ -288,6 +292,8 @@ void MissionController::tick(const ros::Time& now, double dt)
 {
   tickServo(now);
 
+  const std::string land_mode = "AUTO.LAND";  // PX4 mode name
+
   if (phase_ != Phase::WAIT_FCU && phase_ != Phase::WAIT_ODOM && !odomHealthy(now))
   {
     triggerFailsafeHover("ODOM timeout");
@@ -295,16 +301,46 @@ void MissionController::tick(const ros::Time& now, double dt)
   }
 
   // If operator takes over by leaving OFFBOARD, stop mission logic.
-  if ((phase_ != Phase::WAIT_FCU && phase_ != Phase::WAIT_ODOM && phase_ != Phase::DONE) &&
-      (!current_state_.mode.empty() && current_state_.mode != "OFFBOARD") &&
-      (phase_ != Phase::WAIT_MANUAL) && (phase_ != Phase::FAILSAFE_HOVER))
+  // Note: before OFFBOARD is successfully set, FCU mode is expected to be something else,
+  // so do NOT enter WAIT_MANUAL during PREOFFBOARD_STREAM/SET_OFFBOARD/ARM.
+  const bool manual_takeover_sensitive =
+      phase_ != Phase::WAIT_FCU && phase_ != Phase::WAIT_ODOM && phase_ != Phase::PREOFFBOARD_STREAM &&
+      phase_ != Phase::SET_OFFBOARD && phase_ != Phase::ARM && phase_ != Phase::LAND && phase_ != Phase::DONE &&
+      phase_ != Phase::WAIT_MANUAL && phase_ != Phase::FAILSAFE_HOVER;
+
+  const bool not_offboard = !current_state_.mode.empty() && current_state_.mode != "OFFBOARD";
+  if (manual_takeover_sensitive && not_offboard)
   {
-    enterPhase(Phase::WAIT_MANUAL, "WAIT_MANUAL: FCU mode=" + current_state_.mode);
+    // Distinguish operator takeover vs OFFBOARD loss/failsafe:
+    // - manual_input==true: user is actively controlling -> stop fighting (WAIT_MANUAL)
+    // - manual_input==false: likely OFFBOARD was lost automatically -> failsafe hover (keep trying / wait takeover)
+    resume_phase_ = phase_;
+    if (current_state_.manual_input)
+    {
+      enterPhase(Phase::WAIT_MANUAL, "WAIT_MANUAL: FCU mode=" + current_state_.mode);
+    }
+    else
+    {
+      triggerFailsafeHover("OFFBOARD lost: FCU mode=" + current_state_.mode);
+    }
     return;
   }
 
   if (phase_ == Phase::WAIT_MANUAL)
   {
+    // If user switches back to OFFBOARD, resume mission from last phase.
+    if (!current_state_.mode.empty() && current_state_.mode == "OFFBOARD" && !current_state_.manual_input)
+    {
+      // Reset setpoint close to current position to avoid a jump.
+      setpoint_ = makePose(current_odom_.pose.pose.position.x,
+                           current_odom_.pose.pose.position.y,
+                           current_odom_.pose.pose.position.z,
+                           0.0);
+      goal_pose_ = setpoint_;
+      enterPhase(resume_phase_, "RESUME: OFFBOARD restored");
+      return;
+    }
+
     if ((now - phase_enter_time_).toSec() > segment_timeout_s_)
     {
       publishMissionState("WAIT_MANUAL timeout: switch to OFFBOARD to resume, or LAND manually");
@@ -313,9 +349,13 @@ void MissionController::tick(const ros::Time& now, double dt)
     return;
   }
 
+  // Segment timeout applies only to transit-like phases.
+  // Phases with explicit durations (circle/hover) are excluded to avoid boundary preemption.
   const bool timeout_sensitive =
-      phase_ != Phase::WAIT_FCU && phase_ != Phase::WAIT_ODOM && phase_ != Phase::PREOFFBOARD_STREAM &&
-      phase_ != Phase::SET_OFFBOARD && phase_ != Phase::ARM && phase_ != Phase::LAND && phase_ != Phase::DONE;
+      phase_ == Phase::TAKEOFF || phase_ == Phase::GOTO_OBSTACLE || phase_ == Phase::GOTO_QRCODE ||
+      phase_ == Phase::GOTO_IMAGE_1 || phase_ == Phase::GOTO_IMAGE_2 || phase_ == Phase::GOTO_IMAGE_3 ||
+      phase_ == Phase::GOTO_IMAGE_4 || phase_ == Phase::GOTO_SPECIAL || phase_ == Phase::GOTO_RING_VIEW ||
+      phase_ == Phase::PASS_RING || phase_ == Phase::GOTO_LAND;
 
   if (timeout_sensitive && (now - segment_start_time_).toSec() > segment_timeout_s_)
   {
@@ -333,28 +373,51 @@ void MissionController::tick(const ros::Time& now, double dt)
     }
     case Phase::WAIT_ODOM:
     {
-      publishSetpointNow(setpoint_);
-      if (odomHealthy(now)) enterPhase(Phase::PREOFFBOARD_STREAM, "PREOFFBOARD_STREAM");
+      if (odomHealthy(now))
+      {
+        // Initialize setpoint close to the vehicle to avoid a large jump during pre-stream.
+        setpoint_ = makePose(current_odom_.pose.pose.position.x,
+                             current_odom_.pose.pose.position.y,
+                             current_odom_.pose.pose.position.z,
+                             0.0);
+        goal_pose_ = setpoint_;
+        publishSetpointNow(setpoint_);
+        enterPhase(Phase::PREOFFBOARD_STREAM, "PREOFFBOARD_STREAM");
+      }
+      else
+      {
+        publishSetpointNow(setpoint_);
+      }
       break;
     }
     case Phase::PREOFFBOARD_STREAM:
     {
       publishSetpointNow(setpoint_);
-      if ((now - phase_enter_time_).toSec() >= prestream_time_s_) enterPhase(Phase::SET_OFFBOARD, "SET_OFFBOARD");
-      break;
-    }
-    case Phase::SET_OFFBOARD:
-    {
-      publishSetpointNow(setpoint_);
-      if (setMode("OFFBOARD")) enterPhase(Phase::ARM, "ARM");
-      else triggerFailsafeHover("failed to set OFFBOARD");
+      if ((now - phase_enter_time_).toSec() >= prestream_time_s_) enterPhase(Phase::ARM, "ARM");
       break;
     }
     case Phase::ARM:
     {
       publishSetpointNow(setpoint_);
-      if (arm(true)) enterPhase(Phase::TAKEOFF, "TAKEOFF");
+      if (arm(true)) enterPhase(Phase::SET_OFFBOARD, "SET_OFFBOARD");
       else triggerFailsafeHover("failed to ARM");
+      break;
+    }
+    case Phase::SET_OFFBOARD:
+    {
+      publishSetpointNow(setpoint_);
+      if (!current_state_.mode.empty() && current_state_.mode == "OFFBOARD")
+      {
+        enterPhase(Phase::TAKEOFF, "TAKEOFF");
+        break;
+      }
+
+      // Try to switch to OFFBOARD periodically while continuing to stream setpoints.
+      if (last_offboard_request_time_.isZero() || (now - last_offboard_request_time_).toSec() > 1.0)
+      {
+        (void)setMode("OFFBOARD");
+        last_offboard_request_time_ = now;
+      }
       break;
     }
     case Phase::TAKEOFF:
@@ -574,16 +637,27 @@ void MissionController::tick(const ros::Time& now, double dt)
     case Phase::LAND:
     {
       publishSetpointNow(setpoint_);
-      setMode("LAND");
+      setMode(land_mode);
       if (!current_state_.armed) enterPhase(Phase::DONE, "DONE");
       break;
     }
     case Phase::FAILSAFE_HOVER:
     {
-      if (!current_state_.mode.empty() && current_state_.mode != "OFFBOARD")
+      // If operator is actively controlling, stop publishing setpoints.
+      if (current_state_.manual_input && (!current_state_.mode.empty() && current_state_.mode != "OFFBOARD"))
       {
         enterPhase(Phase::WAIT_MANUAL, "WAIT_MANUAL: operator takeover after failsafe");
         break;
+      }
+
+      // If OFFBOARD was lost automatically, keep streaming a hold setpoint and try to re-enter OFFBOARD.
+      if (!current_state_.mode.empty() && current_state_.mode != "OFFBOARD")
+      {
+        if (last_offboard_request_time_.isZero() || (now - last_offboard_request_time_).toSec() > 1.0)
+        {
+          (void)setMode("OFFBOARD");
+          last_offboard_request_time_ = now;
+        }
       }
 
       goal_pose_ = hold_pose_;
@@ -593,7 +667,7 @@ void MissionController::tick(const ros::Time& now, double dt)
       if ((now - failsafe_start_time_).toSec() >= failsafe_hover_timeout_s_)
       {
         publishMissionState("FAILSAFE timeout -> LAND");
-        setMode("LAND");
+        setMode(land_mode);
         enterPhase(Phase::LAND, "LAND");
       }
       break;

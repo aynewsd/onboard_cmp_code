@@ -118,7 +118,7 @@ private:
   double ring_height_{1.6};
 
   double segment_timeout_s_{60.0};
-  double circle_duration_s_{60.0};
+  double circle_duration_s_{10.0};
   double circle_radius_m_{1.2};
   double circle_period_s_{10.0};
   double hover_qr_s_{3.0};
@@ -148,6 +148,8 @@ private:
   ros::Time phase_enter_time_;
   ros::Time segment_start_time_;
   ros::Time failsafe_start_time_;
+  ros::Time last_offboard_request_time_;
+  Phase resume_phase_{Phase::WAIT_FCU};
 
   geometry_msgs::PoseStamped setpoint_;
   geometry_msgs::PoseStamped goal_pose_;
