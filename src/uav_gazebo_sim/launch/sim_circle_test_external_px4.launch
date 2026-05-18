@@ -1,0 +1,42 @@
+<launch>
+  <!-- External PX4 SITL launch wrapper for circle/waypoint flight test.
+       Use this when PX4 SITL (and Gazebo) is started externally. -->
+
+  <!-- NOTE: PX4's gazebo SITL does NOT necessarily publish ROS /clock, so
+       default to wall-time to avoid ROS time jumps breaking MAVROS timesync. -->
+  <arg name="use_sim_time" default="false"/>
+  <param name="/use_sim_time" value="$(arg use_sim_time)"/>
+
+  <!-- MAVROS connection -->
+  <arg name="fcu_url" default="udp://:14540@127.0.0.1:14557"/>
+
+  <!-- Odometry source for test node -->
+  <arg name="odom_topic" default="/mavros/local_position/odom"/>
+
+  <!-- Optional: FAST-LIO2 in simulation (requires lidar topic + IMU topic to exist) -->
+  <arg name="use_fastlio" default="false"/>
+
+  <!-- MAVROS (connect to external PX4 SITL) -->
+  <include file="$(find mavros)/launch/px4.launch">
+    <arg name="fcu_url" value="$(arg fcu_url)"/>
+  </include>
+
+  <group if="$(arg use_fastlio)">
+    <include file="$(find FAST_LIO2)/launch/launch_mid360.launch">
+      <arg name="pointcloud_topic" value="/livox/lidar"/>
+      <arg name="imu_topic" value="/mavros/imu/data"/>
+    </include>
+    <node pkg="tf2_ros" type="static_transform_publisher" name="lidar_tf"
+          args="0 0 0.1 0 0 0 base_link livox_frame"/>
+  </group>
+
+  <!-- Circle/waypoint test node -->
+  <node name="px4_waypoint_circle_test_node"
+        pkg="px4_waypoint_circle_test"
+        type="px4_waypoint_circle_test_node"
+        output="screen">
+    <rosparam file="$(find px4_waypoint_circle_test)/config/params.yaml" command="load"/>
+    <param name="odom_topic" value="$(arg odom_topic)"/>
+  </node>
+</launch>
+

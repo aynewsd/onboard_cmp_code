@@ -1,0 +1,6 @@
+<launch>
+  <node name="odom_to_out" pkg="odom_to_out" type="odom_to_out_node" output="screen">
+    <rosparam file="$(find odom_to_out)/config/odom_to_out.yaml" command="load"/>
+  </node>
+</launch>
+

@@ -1,0 +1,10 @@
+input_topic: "/Odometry"
+output_topic: "/mavros/vision_pose/pose"
+
+# Frame ids for output PoseStamped (leave empty to keep original header.frame_id)
+output_frame_id: "map"
+
+# If true, drop odom->pose.orientation and publish yaw-only quaternion from odom
+# (default false: forward full quaternion as-is)
+yaw_only: false
+

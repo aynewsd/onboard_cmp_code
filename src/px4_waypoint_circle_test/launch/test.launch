@@ -1,0 +1,8 @@
+<launch>
+  <rosparam file="$(find px4_waypoint_circle_test)/config/params.yaml" command="load" />
+  <node name="px4_waypoint_circle_test_node"
+        pkg="px4_waypoint_circle_test"
+        type="px4_waypoint_circle_test_node"
+        output="screen" />
+</launch>
+

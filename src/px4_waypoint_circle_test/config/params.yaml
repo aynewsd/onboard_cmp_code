@@ -1,0 +1,25 @@
+# Odom source (ENU)
+odom_topic: "/Odometry"
+
+# Control loop
+publish_rate: 20.0            # Hz (should be >= 2Hz)
+position_tolerance: 0.25      # m
+
+# Flight heights
+takeoff_z: 1.4                # m
+
+# Horizontal waypoint (relative to takeoff position, meters)
+waypoint_x_offset: 1.0
+waypoint_y_offset: 0.0
+
+# Hover
+hover_time: 5.0               # s
+
+# Circle flight
+circle_radius: 1.0            # m
+circle_laps: 10               # laps
+circle_period: 10.0           # seconds per lap
+
+# Safety timeout (whole mission)
+timeout: 300.0                # s
+

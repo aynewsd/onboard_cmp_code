@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>px4_waypoint_circle_test</name>
+  <version>0.0.1</version>
+  <description>PX4 Offboard waypoint + circle flight test (ROS1/MAVROS)</description>
+  <maintainer email="your_email@example.com">Your Name</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>mavros_msgs</depend>
+  <depend>mavros</depend>
+</package>
+

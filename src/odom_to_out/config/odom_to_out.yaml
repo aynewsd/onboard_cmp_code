@@ -1,0 +1,10 @@
+input_topic: "/Odometry"
+output_topic: "/mavros/odometry/out"
+
+# Frame ids for output message (NED)
+output_frame_id: "map"
+output_child_frame_id: ""   # empty -> keep incoming child_frame_id
+
+# Convert twist vectors as if they are expressed in ENU (common for some SLAM outputs)
+convert_twist: true
+

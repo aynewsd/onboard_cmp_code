@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>odom_to_pose</name>
+  <version>0.0.1</version>
+  <description>Forward /Odometry to /mavros/vision_pose/pose</description>
+  <maintainer email="your@email.com">Your Name</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2</depend>
+</package>
+
