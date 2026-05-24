@@ -1,0 +1,6 @@
+<launch>
+  <node name="uav_camera_publisher" pkg="uav_camera_publisher" type="camera_publisher_node.py" output="screen">
+    <rosparam file="$(find uav_camera_publisher)/config/camera_publisher.yaml" command="load"/>
+  </node>
+</launch>
+

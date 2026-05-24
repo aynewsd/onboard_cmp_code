@@ -1,0 +1,32 @@
+# 通用
+frame_id: "camera"
+publish_rate: 10.0                # Hz
+loop: true                        # folder 模式下是否循环播放
+
+# 话题（按需求固定为 /camera/*，但这里也允许覆盖）
+image_topic: "/camera/image_raw"
+camera_info_topic: "/camera/camera_info"
+
+# 相机标定（可选）
+# camera_info_manager 支持的 URL，例如:
+# - file:///home/ubuntu/calib.yaml
+# - package://<pkg_name>/config/calib.yaml
+camera_name: "camera"
+camera_info_url: ""
+
+# 图像源模式：camera 或 folder
+source_type: "camera"
+
+# camera 模式参数（OpenCV VideoCapture）
+device_id: 0
+device_path: ""                   # 可填 /dev/video0；如果非空优先使用
+width: 640
+height: 480
+
+# folder 模式参数
+folder_path: "/home/demo/uav_ws/src/uav_camera_publisher/images"                   # 例如 /home/ubuntu/images
+extensions: [".jpg", ".jpeg", ".png", ".bmp"]
+
+# 编码：常用 bgr8 或 mono8（根据你的图片实际通道）
+encoding: "bgr8"
+

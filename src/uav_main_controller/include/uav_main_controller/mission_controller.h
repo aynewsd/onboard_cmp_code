@@ -3,6 +3,7 @@
 
 #include <geometry_msgs/PoseStamped.h>
 #include <mavros_msgs/CommandBool.h>
+#include <mavros_msgs/RCIn.h>
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/State.h>
 #include <nav_msgs/Odometry.h>
@@ -33,6 +34,14 @@ public:
     double z{0.0};
   };
 
+  struct Rect2D
+  {
+    double min_x{0.0};
+    double max_x{0.0};
+    double min_y{0.0};
+    double max_y{0.0};
+  };
+
 private:
   enum class Phase
   {
@@ -47,9 +56,9 @@ private:
     GOTO_QRCODE,
     HOVER_QRCODE,
     GOTO_IMAGE_1,
-    HOVER_IMAGE_1_DROP_1,
+    HOVER_IMAGE_1,
     GOTO_IMAGE_2,
-    HOVER_IMAGE_2_DROP_2,
+    HOVER_IMAGE_2,
     GOTO_IMAGE_3,
     HOVER_IMAGE_3,
     GOTO_IMAGE_4,
@@ -68,6 +77,7 @@ private:
 
   void stateCallback(const mavros_msgs::State::ConstPtr& msg);
   void odomCallback(const nav_msgs::Odometry::ConstPtr& msg);
+  void rcInCallback(const mavros_msgs::RCIn::ConstPtr& msg);
 
   bool setMode(const std::string& mode);
   bool arm(bool arm_value);
@@ -84,6 +94,16 @@ private:
                                         double dt) const;
   bool odomHealthy(const ros::Time& now) const;
 
+  // Simple path planning helpers (2D)
+  static double distPointToSeg2d(double px, double py, double ax, double ay, double bx, double by);
+  static bool segIntersectsRect2d(double ax, double ay, double bx, double by, const Rect2D& r);
+  bool needsDetour(const geometry_msgs::PoseStamped& from,
+                   const geometry_msgs::PoseStamped& to,
+                   bool avoid_ring_zone) const;
+  geometry_msgs::PoseStamped computeDetour(const geometry_msgs::PoseStamped& from,
+                                          const geometry_msgs::PoseStamped& to,
+                                          bool avoid_ring_zone) const;
+
   void enterPhase(Phase next, const std::string& reason);
   void tick(const ros::Time& now, double dt);
   void triggerFailsafeHover(const std::string& reason);
@@ -91,10 +111,26 @@ private:
   void startServoDrop(int8_t servo_id, const ros::Time& now);
   void tickServo(const ros::Time& now);
 
+  // -----------------------------
+  // RC解析（单独拎出来，你后续填充实现）
+  // -----------------------------
+  struct RcDropSelection
+  {
+    bool ok{false};
+    int drop1_image{1};                 // 1..4
+    int drop2_image{2};                 // 1..4
+    std::string land_side{"left"};      // "left" or "right"
+  };
+  static RcDropSelection parseRcDropSelection(const mavros_msgs::RCIn& rc);
+
+  // 统一的IMAGE悬停/投放处理：image_index = 1..4
+  void tickHoverImage(int image_index, const ros::Time& now, double dt);
+
 private:
   ros::NodeHandle nh_;
   ros::Subscriber state_sub_;
   ros::Subscriber odom_sub_;
+  ros::Subscriber rc_sub_;
   ros::Publisher setpoint_pub_;
   ros::Publisher mission_state_pub_;
   ros::Publisher target_pose_pub_;
@@ -105,6 +141,8 @@ private:
   mavros_msgs::State current_state_;
   nav_msgs::Odometry current_odom_;
   ros::Time last_odom_time_;
+  mavros_msgs::RCIn last_rc_;
+  ros::Time last_rc_time_;
 
   std::string odom_topic_{"/Odometry"};
   double control_rate_{20.0};
@@ -162,6 +200,27 @@ private:
   int8_t active_servo_id_{0};
   bool servo_open_{false};
   ros::Time servo_open_until_;
+
+  // Avoidance parameters
+  double obstacle_size_m_{0.6};          // obstacle footprint (square), meters
+  double obstacle_clearance_m_{0.4};     // extra clearance, meters
+  bool avoid_ring_zone_{true};
+
+  // Two-segment path following for detours
+  bool detour_active_{false};
+  geometry_msgs::PoseStamped detour_pose_;
+  geometry_msgs::PoseStamped final_pose_;
+
+  // Drop target selection (IMAGE_n) via RC at HOVER_QRCODE
+  bool rc_drop_select_enabled_{true};
+  double rc_timeout_s_{1.0};
+  int selected_drop1_{1};  // IMAGE index 1..4
+  int selected_drop2_{2};  // IMAGE index 1..4
+  // RC选择只在首次到达IMAGE_1时解析并锁定，后续不再更新（避免飞行中抖动）。
+  bool rc_drop_selected_locked_{false};
+
+  // 最终降落左右（RC解析得到；默认使用mission.yaml里的default_land_side）
+  std::string selected_land_side_;
 };
 
 #endif

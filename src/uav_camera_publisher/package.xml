@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>uav_camera_publisher</name>
+  <version>0.0.1</version>
+  <description>Publish /camera/image_raw and /camera/camera_info from a camera device or an image folder</description>
+  <maintainer email="your_email@example.com">Your Name</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>camera_info_manager</depend>
+</package>
+

@@ -1,10 +1,10 @@
 # 目标航点配置（相对于起飞点的偏移，单位：米）
-target_x_offset: 2.0   # 东向偏移
-target_y_offset: 0.0   # 北向偏移
+target_x_offset: 1.0   # 东向偏移
+target_y_offset: 1.0   # 北向偏移
 target_z: 1.0          # 飞行高度
 
 # 飞行参数
-position_tolerance: 0.2  # 到达航点的位置误差阈值（米）
+position_tolerance: 0.1  # 到达航点的位置误差阈值（米）
 hover_time: 5.0          # 到达后悬停时间（秒）
 timeout: 30.0            # 飞行超时时间（秒）
 publish_rate: 20.0       # 位置指令发布频率（Hz，不能低于2Hz）

@@ -35,7 +35,7 @@ void odom_cb(const nav_msgs::Odometry::ConstPtr& msg) {
     current_enu_pose.header = msg->header;
     current_enu_pose.header.frame_id = "map";
     current_enu_pose.pose = msg->pose.pose;
-    vision_pose_pub.publish(current_enu_pose);
+    //vision_pose_pub.publish(current_enu_pose);
 }
 
 double get_position_error() {
@@ -59,7 +59,7 @@ int main(int argc, char **argv) {
     nh.param<std::string>("odom_topic", odom_topic, "/Odometry");
 
     // ����������ʼ���Ӿ���λ������
-    vision_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/mavros/vision_pose/pose", 10);
+    //vision_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/mavros/vision_pose/pose", 10);
 
     ros::Subscriber state_sub = nh.subscribe<mavros_msgs::State>("/mavros/state", 10, state_cb);
     ros::Subscriber odom_sub = nh.subscribe<nav_msgs::Odometry>(odom_topic, 10, odom_cb);
@@ -84,7 +84,13 @@ int main(int argc, char **argv) {
     ROS_INFO("Odometry OK!");
 
     // Ŀ��㣨ENU��
+    target_pose.pose.position.x = current_enu_pose.pose.position.x + target_x_offset;
+    target_pose.pose.position.y = current_enu_pose.pose.position.y + target_y_offset;
+    target_pose.pose.position.z =  target_z;
     target_pose.pose.orientation.w = 1.0;
+    target_pose.pose.orientation.x = 0.0;
+    target_pose.pose.orientation.y = 0.0;
+    target_pose.pose.orientation.z = 0.0;
 
     ROS_INFO("Target: (%.2f, %.2f, %.2f)", target_pose.pose.position.x, target_pose.pose.position.y, target_pose.pose.position.z);
 

@@ -27,6 +27,20 @@ hover_special_s: 3.0
 hover_ring_view_s: 5.0
 servo_open_time_s: 0.8
 
+# -----------------------------
+# Simple avoidance (2D)
+# -----------------------------
+obstacle_size_m: 0.6              # obstacle footprint is 0.6m x 0.6m
+obstacle_clearance_m: 0.4         # extra clearance around obstacle
+avoid_ring_zone: true             # avoid ring random-zone rectangle except PASS_RING stage
+
+# -----------------------------
+# RC-based drop target selection (no image recognition)
+# -----------------------------
+rc_drop_select_enabled: true
+rc_timeout_s: 1.0                 # seconds; if RC not updated, keep defaults
+rc_topic: "/mavros/rc/in"          # MAVROS RC input
+
 # Failsafe behavior
 failsafe_hover_timeout_s: 10.0    # hover waiting for RC takeover, then LAND
 odom_timeout_s: 0.5               # if no odom update for this long -> failsafe
@@ -54,4 +68,3 @@ ring_default_mm: [7500.0, 4600.0]
 land_left_mm: [1500.0, 1400.0]
 land_right_mm: [1500.0, 4600.0]
 default_land_side: "left"         # "left" or "right" (QR not implemented yet)
-

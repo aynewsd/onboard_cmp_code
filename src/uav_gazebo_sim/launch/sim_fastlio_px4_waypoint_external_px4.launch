@@ -1,0 +1,45 @@
+<launch>
+  <!-- External PX4 SITL launch wrapper for fastlio_px4_waypoint.
+       Use this when PX4 SITL (and Gazebo) is started externally. -->
+
+  <!-- NOTE: PX4's gazebo SITL does NOT necessarily publish ROS /clock, so
+       default to wall-time to avoid ROS time jumps breaking MAVROS timesync. -->
+  <arg name="use_sim_time" default="false"/>
+  <param name="/use_sim_time" value="$(arg use_sim_time)"/>
+
+  <!-- MAVROS connection -->
+  <arg name="fcu_url" default="udp://:14540@127.0.0.1:14557"/>
+
+  <!-- Odometry source for waypoint node:
+       - simulation: /mavros/local_position/odom
+       - real SLAM  : /Odometry (FastLIO output) -->
+  <arg name="odom_topic" default="/mavros/local_position/odom"/>
+
+  <!-- Optional: run FAST-LIO2 in simulation (requires lidar topic + IMU topic to exist) -->
+  <arg name="use_fastlio" default="false"/>
+
+  <!-- MAVROS (connect to external PX4 SITL) -->
+  <include file="$(find mavros)/launch/px4.launch">
+    <arg name="fcu_url" value="$(arg fcu_url)"/>
+  </include>
+
+  <group if="$(arg use_fastlio)">
+    <include file="$(find FAST_LIO2)/launch/launch_mid360.launch">
+      <arg name="pointcloud_topic" value="/livox/lidar"/>
+      <arg name="imu_topic" value="/mavros/imu/data"/>
+    </include>
+    <node pkg="tf2_ros" type="static_transform_publisher" name="lidar_tf"
+          args="0 0 0.1 0 0 0 base_link livox_frame"/>
+  </group>
+
+  <!-- fastlio_px4_waypoint (load params into the node's private namespace) -->
+  <node name="fastlio_px4_waypoint_node"
+        pkg="fastlio_px4_waypoint"
+        type="fastlio_px4_waypoint_node"
+        output="screen">
+    <rosparam file="$(find fastlio_px4_waypoint)/config/waypoint_params.yaml" command="load" />
+    <!-- Override odom source if needed -->
+    <param name="odom_topic" value="$(arg odom_topic)"/>
+  </node>
+</launch>
+
