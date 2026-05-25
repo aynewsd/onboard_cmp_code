@@ -123,10 +123,21 @@ private:
   };
   static RcDropSelection parseRcDropSelection(const mavros_msgs::RCIn& rc);
 
-  // 统一的IMAGE悬停/投放处理：image_index = 1..4
-  void tickHoverImage(int image_index, const ros::Time& now, double dt);
+  // 统一的IMAGE悬停/投放处理（RC模式）：image_index = 1..4
+  // 返回true表示本IMAGE流程已完成，可以切换到下一段航线；false表示仍在本阶段处理中。
+  bool tickHoverImageRcMode(int image_index, const ros::Time& now, double dt);
+  void resetImageHoverStage();
 
 private:
+  enum class ImageHoverStage
+  {
+    HOVER,    // 在巡航高度悬停一段时间
+    DESCEND,  // 原地下降到投放高度
+    DROP,     // 执行投放（可投放1/2任意组合）
+    ASCEND,   // 原地抬升回巡航高度
+    DONE      // 本IMAGE处理完成
+  };
+
   ros::NodeHandle nh_;
   ros::Subscriber state_sub_;
   ros::Subscriber odom_sub_;
@@ -221,6 +232,10 @@ private:
 
   // 最终降落左右（RC解析得到；默认使用mission.yaml里的default_land_side）
   std::string selected_land_side_;
+
+  // HOVER_IMAGE内部小状态机（仅RC模式用）
+  ImageHoverStage image_hover_stage_{ImageHoverStage::HOVER};
+  ros::Time image_hover_stage_start_time_;
 };
 
 #endif

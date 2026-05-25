@@ -294,41 +294,116 @@ MissionController::RcDropSelection MissionController::parseRcDropSelection(const
     return ans;
   };
   RcDropSelection out;
-  if(!rc_drop_select_enabled_ ){
-  out.ok = false;
-  return out;
+
+  // 注意：该函数在头文件中被声明为static，因此这里不能访问任何成员变量
+  // （例如 rc_drop_select_enabled_）。开关逻辑应在调用处处理。
+
+  if (rc_msgs.channels.size() <= 8)
+  {
+    out.ok = false;
+    return out;
   }
 
-  out.drop1_image= segment(rc_msgs.channels[7]);
-  out.drop2_image= segment(rc_msgs.channels[8]);
+  out.drop1_image = segment(rc_msgs.channels[7]);
+  out.drop2_image = segment(rc_msgs.channels[8]);
   out.land_side = (rc_msgs.channels[6] == 999) ? std::string("left") : std::string("right");
+
+  // 合法性：投放点必须在[1..4]范围内
+  out.ok = (out.drop1_image >= 1 && out.drop1_image <= 4 && out.drop2_image >= 1 && out.drop2_image <= 4);
   return out;
 }
 
-void MissionController::tickHoverImage(int image_index, const ros::Time& now, double dt)
+void MissionController::resetImageHoverStage()
+{
+  image_hover_stage_ = ImageHoverStage::HOVER;
+  image_hover_stage_start_time_ = ros::Time(0);
+}
+
+bool MissionController::tickHoverImageRcMode(int image_index, const ros::Time& now, double dt)
 {
   // image_index: 1..4
   const int idx = std::max(1, std::min(4, image_index)) - 1;
 
-  // 统一处理：先下降到drop_height_（只做一次），到位后根据selected_drop1_/2_决定是否投放
-  const auto low = mapToEnu(image_targets_mm_.at(idx), drop_height_);
-  goal_pose_ = makePose(low.x, low.y, low.z, 0.0);
-  setpoint_ = stepToward(setpoint_, goal_pose_, dt);
-  publishSetpointNow(setpoint_);
+  // 先判定本IMAGE是否需要投放（RC模式下允许drop1/drop2都落在同一张IMAGE）
+  const bool need_drop1_here = (!servo_1_done_ && selected_drop1_ == image_index);
+  const bool need_drop2_here = (!servo_2_done_ && selected_drop2_ == image_index);
+  const bool need_any_drop_here = need_drop1_here || need_drop2_here;
 
-  if (!reached(goal_pose_)) return;
+  // 阶段计时起点（进入某阶段的第一帧）
+  if (image_hover_stage_start_time_.isZero()) image_hover_stage_start_time_ = now;
 
-  // 到位后执行投放判断：servo_1_done_/servo_2_done_分别代表drop1/drop2是否已执行过
-  if (!servo_1_done_ && selected_drop1_ == image_index)
+  switch (image_hover_stage_)
   {
-    startServoDrop(1, now);
-    servo_1_done_ = true;
+    case ImageHoverStage::HOVER:
+    {
+      // 1) 先在巡航高度悬停几秒（按hover_image_s_）
+      // 2) 如果本IMAGE不需要投放，则直接完成（由外层进入下一个状态）
+      // 注意：这里不做水平移动，只保持当前位置（setpoint_）
+      publishSetpointNow(setpoint_);
+
+      if ((now - image_hover_stage_start_time_).toSec() < hover_image_s_) return false;
+
+      if (!need_any_drop_here)
+      {
+        image_hover_stage_ = ImageHoverStage::DONE;
+        return true;
+      }
+
+      image_hover_stage_ = ImageHoverStage::DESCEND;
+      image_hover_stage_start_time_ = now;
+      return false;
+    }
+    case ImageHoverStage::DESCEND:
+    {
+      // 原地下降到投放高度（不允许边移动边下降）
+      const auto low = mapToEnu(image_targets_mm_.at(idx), drop_height_);
+      goal_pose_ = makePose(low.x, low.y, low.z, 0.0);
+      setpoint_ = stepToward(setpoint_, goal_pose_, dt);
+      publishSetpointNow(setpoint_);
+      if (!reached(goal_pose_)) return false;
+
+      image_hover_stage_ = ImageHoverStage::DROP;
+      image_hover_stage_start_time_ = now;
+      return false;
+    }
+    case ImageHoverStage::DROP:
+    {
+      // 执行投放（允许投放1/2任意组合）
+      // 这里不再下发下降/上升目标，只维持当前位置（低高度点）
+      publishSetpointNow(setpoint_);
+
+      if (need_drop1_here)
+      {
+        startServoDrop(1, now);
+        servo_1_done_ = true;
+      }
+      if (need_drop2_here)
+      {
+        startServoDrop(2, now);
+        servo_2_done_ = true;
+      }
+
+      image_hover_stage_ = ImageHoverStage::ASCEND;
+      image_hover_stage_start_time_ = now;
+      return false;
+    }
+    case ImageHoverStage::ASCEND:
+    {
+      // 投放后必须先原地抬升回巡航高度，再进入后续移动
+      const auto high = mapToEnu(image_targets_mm_.at(idx), cruise_height_);
+      goal_pose_ = makePose(high.x, high.y, high.z, 0.0);
+      setpoint_ = stepToward(setpoint_, goal_pose_, dt);
+      publishSetpointNow(setpoint_);
+      if (!reached(goal_pose_)) return false;
+
+      image_hover_stage_ = ImageHoverStage::DONE;
+      return true;
+    }
+    case ImageHoverStage::DONE:
+      return true;
   }
-  if (!servo_2_done_ && selected_drop2_ == image_index)
-  {
-    startServoDrop(2, now);
-    servo_2_done_ = true;
-  }
+
+  return false;
 }
 
 bool MissionController::setMode(const std::string& mode)
@@ -443,6 +518,8 @@ void MissionController::enterPhase(Phase next, const std::string& reason)
   phase_enter_time_ = ros::Time::now();
   segment_start_time_ = phase_enter_time_;
   detour_active_ = false;
+  // HOVER_IMAGE使用内部小状态机：每次进入新的Phase都重置，避免跨IMAGE串状态
+  resetImageHoverStage();
   publishMissionState(reason);
 }
 
@@ -772,10 +849,15 @@ void MissionController::tick(const ros::Time& now, double dt)
         rc_drop_selected_locked_ = true;
       }
 
-      tickHoverImage(1, now, dt);
+      if (!rc_drop_select_enabled_)
+      {
+        // 视觉模式：你说“先不管”，这里暂时保持最简单行为：原地悬停hover_image_s_后走下一段
+        publishSetpointNow(setpoint_);
+        if ((now - phase_enter_time_).toSec() >= hover_image_s_) enterPhase(Phase::GOTO_IMAGE_2, "GOTO_IMAGE_2");
+        break;
+      }
 
-      // hover_image_s_用于决定在当前IMAGE停留多久（即使没有投放也会停留）
-      if ((now - phase_enter_time_).toSec() >= hover_image_s_) enterPhase(Phase::GOTO_IMAGE_2, "GOTO_IMAGE_2");
+      if (tickHoverImageRcMode(1, now, dt)) enterPhase(Phase::GOTO_IMAGE_2, "GOTO_IMAGE_2");
       break;
     }
     case Phase::GOTO_IMAGE_2:
@@ -806,8 +888,14 @@ void MissionController::tick(const ros::Time& now, double dt)
     }
     case Phase::HOVER_IMAGE_2:
     {
-      tickHoverImage(2, now, dt);
-      if ((now - phase_enter_time_).toSec() >= hover_image_s_) enterPhase(Phase::GOTO_IMAGE_3, "GOTO_IMAGE_3");
+      if (!rc_drop_select_enabled_)
+      {
+        publishSetpointNow(setpoint_);
+        if ((now - phase_enter_time_).toSec() >= hover_image_s_) enterPhase(Phase::GOTO_IMAGE_3, "GOTO_IMAGE_3");
+        break;
+      }
+
+      if (tickHoverImageRcMode(2, now, dt)) enterPhase(Phase::GOTO_IMAGE_3, "GOTO_IMAGE_3");
       break;
     }
     case Phase::GOTO_IMAGE_3:
@@ -838,10 +926,14 @@ void MissionController::tick(const ros::Time& now, double dt)
     }
     case Phase::HOVER_IMAGE_3:
     {
-      publishSetpointNow(setpoint_);
-      tickHoverImage(3, now, dt);
+      if (!rc_drop_select_enabled_)
+      {
+        publishSetpointNow(setpoint_);
+        if ((now - phase_enter_time_).toSec() >= hover_image_s_) enterPhase(Phase::GOTO_IMAGE_4, "GOTO_IMAGE_4");
+        break;
+      }
 
-      if ((now - phase_enter_time_).toSec() >= hover_image_s_) enterPhase(Phase::GOTO_IMAGE_4, "GOTO_IMAGE_4");
+      if (tickHoverImageRcMode(3, now, dt)) enterPhase(Phase::GOTO_IMAGE_4, "GOTO_IMAGE_4");
       break;
     }
     case Phase::GOTO_IMAGE_4:
@@ -872,10 +964,14 @@ void MissionController::tick(const ros::Time& now, double dt)
     }
     case Phase::HOVER_IMAGE_4:
     {
-      publishSetpointNow(setpoint_);
-      tickHoverImage(4, now, dt);
+      if (!rc_drop_select_enabled_)
+      {
+        publishSetpointNow(setpoint_);
+        if ((now - phase_enter_time_).toSec() >= hover_image_s_) enterPhase(Phase::GOTO_SPECIAL, "GOTO_SPECIAL");
+        break;
+      }
 
-      if ((now - phase_enter_time_).toSec() >= hover_image_s_) enterPhase(Phase::GOTO_SPECIAL, "GOTO_SPECIAL");
+      if (tickHoverImageRcMode(4, now, dt)) enterPhase(Phase::GOTO_SPECIAL, "GOTO_SPECIAL");
       break;
     }
     case Phase::GOTO_SPECIAL:
