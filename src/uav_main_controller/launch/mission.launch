@@ -1,6 +1,20 @@
 <launch>
+  <!--
+    Main mission bringup (Real flight / External PX4).
+
+    World frame convention (W):
+      - W is FastLIO first-frame world (x forward, y left, z up)
+      - Map(mm) -> W(m): x aligned, y inverted, origin at (1500,3000) in map coords
+
+    Localization input:
+      - /Odometry is treated as W frame odometry
+      - Use /mavros/vision_pose/pose as PX4 external vision input
+  -->
+
+  <!-- Forward /Odometry (W) to MAVROS vision pose (keep full quaternion; yaw_only=false) -->
+  <include file="$(find odom_to_pose)/launch/odom_to_pose.launch"/>
+
   <node name="mission_controller_node" pkg="uav_main_controller" type="mission_controller_node" output="screen">
     <rosparam file="$(find uav_main_controller)/config/mission.yaml" command="load"/>
   </node>
 </launch>
-

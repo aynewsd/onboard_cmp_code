@@ -11,7 +11,9 @@
   <arg name="fcu_url" default="udp://:14540@127.0.0.1:14557"/>
 
   <!-- Odometry source for test node -->
-  <arg name="odom_topic" default="/mavros/local_position/odom"/>
+  <arg name="odom_topic" default="/Odometry"/>
+  <!-- If true, forward odom_topic to /mavros/vision_pose/pose -->
+  <arg name="use_vision_pose" default="true"/>
 
   <!-- Optional: FAST-LIO2 in simulation (requires lidar topic + IMU topic to exist) -->
   <arg name="use_fastlio" default="false"/>
@@ -30,6 +32,14 @@
           args="0 0 0.1 0 0 0 base_link livox_frame"/>
   </group>
 
+  <group if="$(arg use_vision_pose)">
+    <node name="odom_to_pose" pkg="odom_to_pose" type="odom_to_pose_node" output="screen">
+      <rosparam file="$(find odom_to_pose)/config/odom_to_pose.yaml" command="load"/>
+      <param name="input_topic" value="$(arg odom_topic)"/>
+      <param name="yaw_only" value="false"/>
+    </node>
+  </group>
+
   <!-- Circle/waypoint test node -->
   <node name="px4_waypoint_circle_test_node"
         pkg="px4_waypoint_circle_test"
@@ -39,4 +49,3 @@
     <param name="odom_topic" value="$(arg odom_topic)"/>
   </node>
 </launch>
-

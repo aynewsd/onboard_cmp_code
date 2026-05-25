@@ -5,6 +5,8 @@
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/State.h>
 
+#include <tf2/LinearMath/Quaternion.h>
+
 #include <cmath>
 #include <numeric>
 #include <string>
@@ -24,6 +26,9 @@
 // - PX4 进入 OFFBOARD 前必须先持续收到 setpoint（通常 >= 1s 且频率 >= 2Hz）。
 // - 本示例采用：预发送 setpoint -> ARM -> 循环请求 OFFBOARD，直到 mode==OFFBOARD。
 // - 里程计默认使用 /Odometry（ENU 坐标系）。发布的 setpoint 同样按 ENU（MAVROS local）。
+// - 当前工程约定世界系为 W（FastLIO 第一帧世界，x前y左z上），但 MAVROS 接口存在固定坐标约定。
+//   实测表现为：期望在 W 下飞到 (x,y)，实际会飞到 (y,-x)（顺时针 90°）。
+//   因此在发布到 /mavros/setpoint_position/local 前做一次补偿：CCW 90°：x'=-y, y'=x。
 //
 // 代码风格参考 fastlio_px4_waypoint.cpp：使用全局变量保存 state/odom。
 // ============================================================
@@ -63,9 +68,30 @@ double positionError(const geometry_msgs::PoseStamped& target)
 // - PX4 OFFBOARD 要求：持续流式发送 setpoint，一旦断流可能退出 OFFBOARD
 void publishSetpoint(ros::Publisher& pub, geometry_msgs::PoseStamped& sp)
 {
+  // 先更新时间戳（保持内部sp仍用W系表达）
   sp.header.stamp = ros::Time::now();
   sp.header.frame_id = "map";
-  pub.publish(sp);
+
+  // 坐标补偿：W -> MAVROS期望local（抵消顺时针90°偏转）
+  geometry_msgs::PoseStamped out = sp;
+  const double x = sp.pose.position.x;
+  const double y = sp.pose.position.y;
+  out.pose.position.x = -y;
+  out.pose.position.y = x;
+  out.pose.position.z = sp.pose.position.z;
+
+  // 姿态同样补偿：左乘 +90° yaw
+  tf2::Quaternion q_in(sp.pose.orientation.x, sp.pose.orientation.y, sp.pose.orientation.z, sp.pose.orientation.w);
+  tf2::Quaternion q_rot;
+  q_rot.setRPY(0.0, 0.0, M_PI_2);
+  tf2::Quaternion q_out = q_rot * q_in;
+  q_out.normalize();
+  out.pose.orientation.x = q_out.x();
+  out.pose.orientation.y = q_out.y();
+  out.pose.orientation.z = q_out.z();
+  out.pose.orientation.w = q_out.w();
+
+  pub.publish(out);
 }
 
 int main(int argc, char** argv)

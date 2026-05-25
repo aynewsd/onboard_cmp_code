@@ -74,7 +74,13 @@ MissionController::MissionController(ros::NodeHandle& nh) : nh_(nh)
   nh_.param<std::string>("rc_topic", rc_topic, rc_topic);
 
   map_origin_mm_ = loadPoint2(nh_, "map_origin_mm", map_origin_mm_.x_mm, map_origin_mm_.y_mm);
-  nh_.param<bool>("map_to_enu_y_inverted", map_to_enu_y_inverted_, map_to_enu_y_inverted_);
+  // Backward compatible param name:
+  // - new: map_to_w_y_inverted
+  // - old: map_to_enu_y_inverted
+  if (!nh_.getParam("map_to_w_y_inverted", map_to_w_y_inverted_))
+  {
+    nh_.param<bool>("map_to_enu_y_inverted", map_to_w_y_inverted_, map_to_w_y_inverted_);
+  }
 
   takeoff_mm_ = loadPoint2(nh_, "takeoff_mm", takeoff_mm_.x_mm, takeoff_mm_.y_mm);
   obstacle_mm_ = loadPoint2(nh_, "obstacle_mm", obstacle_mm_.x_mm, obstacle_mm_.y_mm);
@@ -177,20 +183,20 @@ bool MissionController::needsDetour(const geometry_msgs::PoseStamped& from,
   const double by = to.pose.position.y;
 
   // 1) Obstacle avoidance: treat obstacle as a circle with radius = half_size + clearance.
-  const auto obs = mapToEnu(obstacle_mm_, cruise_height_);
+  const auto obs = mapToWorld(obstacle_mm_, cruise_height_);
   const double obs_r = 0.5 * obstacle_size_m_ + obstacle_clearance_m_;
   const double d_obs = distPointToSeg2d(obs.x, obs.y, ax, ay, bx, by);
   const bool hit_obstacle = d_obs < obs_r;
 
   // 2) Ring random-zone avoidance: rectangle in map coords [(6300,6000),(8700,4200)] mm.
-  // Convert to ENU rectangle according to current mapToEnu rule (including y inversion).
+  // Convert to world frame W rectangle according to current map->W rule (including y inversion).
   Rect2D ring_rect;
   if (avoid_ring_zone)
   {
     const MapPointMm p1{6300.0, 6000.0};
     const MapPointMm p2{8700.0, 4200.0};
-    const auto e1 = mapToEnu(p1, 0.0);
-    const auto e2 = mapToEnu(p2, 0.0);
+    const auto e1 = mapToWorld(p1, 0.0);
+    const auto e2 = mapToWorld(p2, 0.0);
     ring_rect.min_x = std::min(e1.x, e2.x);
     ring_rect.max_x = std::max(e1.x, e2.x);
     ring_rect.min_y = std::min(e1.y, e2.y);
@@ -219,7 +225,7 @@ geometry_msgs::PoseStamped MissionController::computeDetour(const geometry_msgs:
   double detour_y = ay;
 
   // Recompute hit flags to decide which detour to apply.
-  const auto obs = mapToEnu(obstacle_mm_, cruise_height_);
+  const auto obs = mapToWorld(obstacle_mm_, cruise_height_);
   const double obs_r = 0.5 * obstacle_size_m_ + obstacle_clearance_m_;
   const bool hit_obstacle = distPointToSeg2d(obs.x, obs.y, ax, ay, bx, by) < obs_r;
 
@@ -229,8 +235,8 @@ geometry_msgs::PoseStamped MissionController::computeDetour(const geometry_msgs:
   {
     const MapPointMm p1{6300.0, 6000.0};
     const MapPointMm p2{8700.0, 4200.0};
-    const auto e1 = mapToEnu(p1, 0.0);
-    const auto e2 = mapToEnu(p2, 0.0);
+    const auto e1 = mapToWorld(p1, 0.0);
+    const auto e2 = mapToWorld(p2, 0.0);
     ring_rect.min_x = std::min(e1.x, e2.x);
     ring_rect.max_x = std::max(e1.x, e2.x);
     ring_rect.min_y = std::min(e1.y, e2.y);
@@ -356,7 +362,7 @@ bool MissionController::tickHoverImageRcMode(int image_index, const ros::Time& n
     case ImageHoverStage::DESCEND:
     {
       // 原地下降到投放高度（不允许边移动边下降）
-      const auto low = mapToEnu(image_targets_mm_.at(idx), drop_height_);
+      const auto low = mapToWorld(image_targets_mm_.at(idx), drop_height_);
       goal_pose_ = makePose(low.x, low.y, low.z, 0.0);
       setpoint_ = stepToward(setpoint_, goal_pose_, dt);
       publishSetpointNow(setpoint_);
@@ -390,7 +396,7 @@ bool MissionController::tickHoverImageRcMode(int image_index, const ros::Time& n
     case ImageHoverStage::ASCEND:
     {
       // 投放后必须先原地抬升回巡航高度，再进入后续移动
-      const auto high = mapToEnu(image_targets_mm_.at(idx), cruise_height_);
+      const auto high = mapToWorld(image_targets_mm_.at(idx), cruise_height_);
       goal_pose_ = makePose(high.x, high.y, high.z, 0.0);
       setpoint_ = stepToward(setpoint_, goal_pose_, dt);
       publishSetpointNow(setpoint_);
@@ -438,6 +444,47 @@ geometry_msgs::Quaternion MissionController::yawToQuaternion(double yaw_rad)
   return q;
 }
 
+namespace
+{
+geometry_msgs::Quaternion quatMultiply(const geometry_msgs::Quaternion& a, const geometry_msgs::Quaternion& b)
+{
+  geometry_msgs::Quaternion out;
+  out.w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
+  out.x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y;
+  out.y = a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x;
+  out.z = a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w;
+  return out;
+}
+
+geometry_msgs::Quaternion quatNormalize(const geometry_msgs::Quaternion& q)
+{
+  const double n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+  if (n < 1e-12) return q;
+  geometry_msgs::Quaternion out = q;
+  out.x /= n;
+  out.y /= n;
+  out.z /= n;
+  out.w /= n;
+  return out;
+}
+
+geometry_msgs::PoseStamped compensateWToMavros(const geometry_msgs::PoseStamped& in,
+                                               const geometry_msgs::Quaternion& q_rot_ccw90)
+{
+  // Observed behavior: commanding (x,y) in W results in (y,-x) in W (CW 90 deg).
+  // Cancel by rotating setpoints CCW 90 deg before publishing to MAVROS.
+  geometry_msgs::PoseStamped out = in;
+  const double x = in.pose.position.x;
+  const double y = in.pose.position.y;
+  out.pose.position.x = -y;
+  out.pose.position.y = x;
+  out.pose.position.z = in.pose.position.z;
+
+  out.pose.orientation = quatNormalize(quatMultiply(q_rot_ccw90, in.pose.orientation));
+  return out;
+}
+}  // namespace
+
 geometry_msgs::PoseStamped MissionController::makePose(double x, double y, double z, double yaw_rad) const
 {
   geometry_msgs::PoseStamped pose;
@@ -449,11 +496,11 @@ geometry_msgs::PoseStamped MissionController::makePose(double x, double y, doubl
   return pose;
 }
 
-MissionController::EnuPoint MissionController::mapToEnu(const MapPointMm& p_mm, double z_m) const
+MissionController::WorldPoint MissionController::mapToWorld(const MapPointMm& p_mm, double z_m) const
 {
   const double dx_m = (p_mm.x_mm - map_origin_mm_.x_mm) / 1000.0;
   double dy_m = (p_mm.y_mm - map_origin_mm_.y_mm) / 1000.0;
-  if (map_to_enu_y_inverted_) dy_m = -dy_m;
+  if (map_to_w_y_inverted_) dy_m = -dy_m;
   return {dx_m, dy_m, z_m};
 }
 
@@ -508,8 +555,14 @@ void MissionController::publishSetpointNow(const geometry_msgs::PoseStamped& pos
 {
   geometry_msgs::PoseStamped p = pose;
   p.header.stamp = ros::Time::now();
-  setpoint_pub_.publish(p);
+
+  // Publish raw W-frame setpoint for debugging/visualization.
   target_pose_pub_.publish(p);
+
+  // Publish compensated setpoint to MAVROS.
+  const geometry_msgs::Quaternion q_rot = yawToQuaternion(kHalfPi);  // +90deg about +Z
+  const geometry_msgs::PoseStamped sp_mavros = compensateWToMavros(p, q_rot);
+  setpoint_pub_.publish(sp_mavros);
 }
 
 void MissionController::enterPhase(Phase next, const std::string& reason)
@@ -720,7 +773,7 @@ void MissionController::tick(const ros::Time& now, double dt)
       // Safety: do NOT fly to the obstacle center.
       // Fly to a nearby entry point on the circle with radius circle_radius_m_.
       // Use the "east" point (angle=0) as the default entry point: (cx + r, cy).
-      const auto c = mapToEnu(obstacle_mm_, cruise_height_);
+      const auto c = mapToWorld(obstacle_mm_, cruise_height_);
       final_pose_ = makePose(c.x + circle_radius_m_, c.y, c.z, 0.0);
       // While approaching obstacle entry point, still avoid ring zone if enabled.
       if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring_zone_))
@@ -747,7 +800,7 @@ void MissionController::tick(const ros::Time& now, double dt)
     }
     case Phase::CIRCLE_OBSTACLE:
     {
-      const auto c = mapToEnu(obstacle_mm_, cruise_height_);
+      const auto c = mapToWorld(obstacle_mm_, cruise_height_);
       const double t = (now - phase_enter_time_).toSec();
       const double w = 2.0 * kPi / std::max(0.1, circle_period_s_);
       const double angle = w * t;
@@ -762,7 +815,7 @@ void MissionController::tick(const ros::Time& now, double dt)
     }
     case Phase::GOTO_QRCODE:
     {
-      const auto p = mapToEnu(qrcode_mm_, cruise_height_);
+      const auto p = mapToWorld(qrcode_mm_, cruise_height_);
       final_pose_ = makePose(p.x, p.y, p.z, 0.0);
       if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring_zone_))
       {
@@ -794,7 +847,7 @@ void MissionController::tick(const ros::Time& now, double dt)
     }
     case Phase::GOTO_IMAGE_1:
     {
-      const auto p = mapToEnu(image_targets_mm_.at(0), cruise_height_);
+      const auto p = mapToWorld(image_targets_mm_.at(0), cruise_height_);
       final_pose_ = makePose(p.x, p.y, p.z, 0.0);
       if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring_zone_))
       {
@@ -862,7 +915,7 @@ void MissionController::tick(const ros::Time& now, double dt)
     }
     case Phase::GOTO_IMAGE_2:
     {
-      const auto p = mapToEnu(image_targets_mm_.at(1), cruise_height_);
+      const auto p = mapToWorld(image_targets_mm_.at(1), cruise_height_);
       final_pose_ = makePose(p.x, p.y, p.z, 0.0);
       if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring_zone_))
       {
@@ -900,7 +953,7 @@ void MissionController::tick(const ros::Time& now, double dt)
     }
     case Phase::GOTO_IMAGE_3:
     {
-      const auto p = mapToEnu(image_targets_mm_.at(2), cruise_height_);
+      const auto p = mapToWorld(image_targets_mm_.at(2), cruise_height_);
       final_pose_ = makePose(p.x, p.y, p.z, 0.0);
       if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring_zone_))
       {
@@ -938,7 +991,7 @@ void MissionController::tick(const ros::Time& now, double dt)
     }
     case Phase::GOTO_IMAGE_4:
     {
-      const auto p = mapToEnu(image_targets_mm_.at(3), cruise_height_);
+      const auto p = mapToWorld(image_targets_mm_.at(3), cruise_height_);
       final_pose_ = makePose(p.x, p.y, p.z, 0.0);
       if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring_zone_))
       {
@@ -976,7 +1029,7 @@ void MissionController::tick(const ros::Time& now, double dt)
     }
     case Phase::GOTO_SPECIAL:
     {
-      const auto p = mapToEnu(special_target_mm_, cruise_height_);
+      const auto p = mapToWorld(special_target_mm_, cruise_height_);
       final_pose_ = makePose(p.x, p.y, p.z, 0.0);
       if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring_zone_))
       {
@@ -1004,7 +1057,7 @@ void MissionController::tick(const ros::Time& now, double dt)
     {
       if (!servo_3_done_)
       {
-        const auto low = mapToEnu(special_target_mm_, drop_height_);
+        const auto low = mapToWorld(special_target_mm_, drop_height_);
         goal_pose_ = makePose(low.x, low.y, low.z, 0.0);
         setpoint_ = stepToward(setpoint_, goal_pose_, dt);
         publishSetpointNow(setpoint_);
@@ -1017,7 +1070,7 @@ void MissionController::tick(const ros::Time& now, double dt)
         break;
       }
 
-      const auto p = mapToEnu(special_target_mm_, cruise_height_);
+      const auto p = mapToWorld(special_target_mm_, cruise_height_);
       goal_pose_ = makePose(p.x, p.y, p.z, 0.0);
       setpoint_ = stepToward(setpoint_, goal_pose_, dt);
       publishSetpointNow(setpoint_);
@@ -1026,8 +1079,8 @@ void MissionController::tick(const ros::Time& now, double dt)
     }
     case Phase::GOTO_RING_VIEW:
     {
-      const auto p = mapToEnu(ring_view_mm_, cruise_height_);
-      const double yaw = map_to_enu_y_inverted_ ? -kHalfPi : kHalfPi;  // face map +Y
+      const auto p = mapToWorld(ring_view_mm_, cruise_height_);
+      const double yaw = map_to_w_y_inverted_ ? -kHalfPi : kHalfPi;  // face map +Y
       final_pose_ = makePose(p.x, p.y, p.z, yaw);
       if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring_zone_))
       {
@@ -1059,7 +1112,7 @@ void MissionController::tick(const ros::Time& now, double dt)
     }
     case Phase::PASS_RING:
     {
-      const auto ring = mapToEnu(ring_default_mm_, ring_height_);
+      const auto ring = mapToWorld(ring_default_mm_, ring_height_);
       final_pose_ = makePose(ring.x, ring.y, ring.z, 0.0);
       // PASS_RING is intended to go through the ring zone, so disable ring-zone avoidance here.
       const bool avoid_ring = false;
@@ -1087,8 +1140,10 @@ void MissionController::tick(const ros::Time& now, double dt)
     }
     case Phase::GOTO_LAND:
     {
-      const MapPointMm land = (default_land_side_ == "right") ? land_right_mm_ : land_left_mm_;
-      const auto p = mapToEnu(land, cruise_height_);
+      // Land side can be selected by RC (selected_land_side_), otherwise uses default_land_side_.
+      const std::string land_side = selected_land_side_.empty() ? default_land_side_ : selected_land_side_;
+      const MapPointMm land = (land_side == "right") ? land_right_mm_ : land_left_mm_;
+      const auto p = mapToWorld(land, cruise_height_);
       final_pose_ = makePose(p.x, p.y, p.z, 0.0);
       if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring_zone_))
       {

@@ -13,7 +13,9 @@
   <!-- Odometry source for waypoint node:
        - simulation: /mavros/local_position/odom
        - real SLAM  : /Odometry (FastLIO output) -->
-  <arg name="odom_topic" default="/mavros/local_position/odom"/>
+  <arg name="odom_topic" default="/Odometry"/>
+  <!-- If true, forward odom_topic to /mavros/vision_pose/pose -->
+  <arg name="use_vision_pose" default="true"/>
 
   <!-- Optional: run FAST-LIO2 in simulation (requires lidar topic + IMU topic to exist) -->
   <arg name="use_fastlio" default="false"/>
@@ -32,6 +34,14 @@
           args="0 0 0.1 0 0 0 base_link livox_frame"/>
   </group>
 
+  <group if="$(arg use_vision_pose)">
+    <node name="odom_to_pose" pkg="odom_to_pose" type="odom_to_pose_node" output="screen">
+      <rosparam file="$(find odom_to_pose)/config/odom_to_pose.yaml" command="load"/>
+      <param name="input_topic" value="$(arg odom_topic)"/>
+      <param name="yaw_only" value="false"/>
+    </node>
+  </group>
+
   <!-- fastlio_px4_waypoint (load params into the node's private namespace) -->
   <node name="fastlio_px4_waypoint_node"
         pkg="fastlio_px4_waypoint"
@@ -42,4 +52,3 @@
     <param name="odom_topic" value="$(arg odom_topic)"/>
   </node>
 </launch>
-

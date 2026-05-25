@@ -10,7 +10,7 @@
 mavros_msgs::State current_state;
 nav_msgs::Odometry current_odom;
 geometry_msgs::PoseStamped target_pose;
-geometry_msgs::PoseStamped current_enu_pose;  // ENU ��ǰλ�ˣ����ø� PX4��
+geometry_msgs::PoseStamped current_w_pose;  // W系当前位姿（FastLIO第一帧世界）
 
 double target_x_offset;
 double target_y_offset;
@@ -25,6 +25,52 @@ ros::Publisher vision_pose_pub;  // ������������ PX4 �
 
 // --- �ص� ---
 
+// 坐标补偿（W -> MAVROS期望local）：抵消观测到的顺时针90度偏转
+static void rotateCcw90(double x_in, double y_in, double& x_out, double& y_out)
+{
+    x_out = -y_in;
+    y_out = x_in;
+}
+
+static geometry_msgs::Quaternion quatMultiply(const geometry_msgs::Quaternion& a, const geometry_msgs::Quaternion& b)
+{
+    geometry_msgs::Quaternion out;
+    out.w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
+    out.x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y;
+    out.y = a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x;
+    out.z = a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w;
+    return out;
+}
+
+static geometry_msgs::Quaternion quatNormalize(const geometry_msgs::Quaternion& q)
+{
+    const double n = std::sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w);
+    if(n < 1e-12) return q;
+    geometry_msgs::Quaternion out = q;
+    out.x /= n; out.y /= n; out.z /= n; out.w /= n;
+    return out;
+}
+
+static geometry_msgs::Quaternion yawToQuaternion(double yaw_rad)
+{
+    geometry_msgs::Quaternion q;
+    q.x = 0.0;
+    q.y = 0.0;
+    q.z = std::sin(yaw_rad * 0.5);
+    q.w = std::cos(yaw_rad * 0.5);
+    return q;
+}
+
+static geometry_msgs::PoseStamped compensateWToMavros(const geometry_msgs::PoseStamped& in)
+{
+    geometry_msgs::PoseStamped out = in;
+    rotateCcw90(in.pose.position.x, in.pose.position.y, out.pose.position.x, out.pose.position.y);
+    out.pose.position.z = in.pose.position.z;
+    const geometry_msgs::Quaternion q_rot = yawToQuaternion(M_PI_2);
+    out.pose.orientation = quatNormalize(quatMultiply(q_rot, in.pose.orientation));
+    return out;
+}
+
 void state_cb(const mavros_msgs::State::ConstPtr& msg) {
     current_state = *msg;
 }
@@ -32,16 +78,16 @@ void state_cb(const mavros_msgs::State::ConstPtr& msg) {
 void odom_cb(const nav_msgs::Odometry::ConstPtr& msg) {
     current_odom = *msg;
 
-    current_enu_pose.header = msg->header;
-    current_enu_pose.header.frame_id = "map";
-    current_enu_pose.pose = msg->pose.pose;
+    current_w_pose.header = msg->header;
+    current_w_pose.header.frame_id = "map";
+    current_w_pose.pose = msg->pose.pose;
     //vision_pose_pub.publish(current_enu_pose);
 }
 
 double get_position_error() {
-    double dx = target_pose.pose.position.x - current_enu_pose.pose.position.x;
-    double dy = target_pose.pose.position.y - current_enu_pose.pose.position.y;
-    double dz = target_pose.pose.position.z - current_enu_pose.pose.position.z;
+    double dx = target_pose.pose.position.x - current_w_pose.pose.position.x;
+    double dy = target_pose.pose.position.y - current_w_pose.pose.position.y;
+    double dz = target_pose.pose.position.z - current_w_pose.pose.position.z;
     return sqrt(dx*dx + dy*dy + dz*dz);
 }
 
@@ -84,8 +130,8 @@ int main(int argc, char **argv) {
     ROS_INFO("Odometry OK!");
 
     // Ŀ��㣨ENU��
-    target_pose.pose.position.x = current_enu_pose.pose.position.x + target_x_offset;
-    target_pose.pose.position.y = current_enu_pose.pose.position.y + target_y_offset;
+    target_pose.pose.position.x = current_w_pose.pose.position.x + target_x_offset;
+    target_pose.pose.position.y = current_w_pose.pose.position.y + target_y_offset;
     target_pose.pose.position.z =  target_z;
     target_pose.pose.orientation.w = 1.0;
     target_pose.pose.orientation.x = 0.0;
@@ -95,7 +141,7 @@ int main(int argc, char **argv) {
     ROS_INFO("Target: (%.2f, %.2f, %.2f)", target_pose.pose.position.x, target_pose.pose.position.y, target_pose.pose.position.z);
 
     for(int i=0; i<100 && ros::ok(); i++) {
-        local_pos_pub.publish(target_pose);
+        local_pos_pub.publish(compensateWToMavros(target_pose));
         ros::spinOnce();
         rate.sleep();
     }
@@ -122,7 +168,7 @@ int main(int argc, char **argv) {
     ros::Time start_time = ros::Time::now();
 
     while(ros::ok()) {
-        local_pos_pub.publish(target_pose);
+        local_pos_pub.publish(compensateWToMavros(target_pose));
 
         double error = get_position_error();
         ROS_INFO_THROTTLE(1.0, 
@@ -131,9 +177,9 @@ int main(int argc, char **argv) {
         current_odom.pose.pose.position.x, 
         current_odom.pose.pose.position.y, 
         current_odom.pose.pose.position.z,
-        current_enu_pose.pose.position.x, 
-        current_enu_pose.pose.position.y, 
-        current_enu_pose.pose.position.z);
+        current_w_pose.pose.position.x, 
+        current_w_pose.pose.position.y, 
+        current_w_pose.pose.position.z);
 
         if(error < position_tolerance) {
             ROS_INFO("Waypoint Reached!");

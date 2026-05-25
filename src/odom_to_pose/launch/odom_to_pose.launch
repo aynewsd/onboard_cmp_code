@@ -3,4 +3,3 @@
     <rosparam file="$(find odom_to_pose)/config/odom_to_pose.yaml" command="load"/>
   </node>
 </launch>
-

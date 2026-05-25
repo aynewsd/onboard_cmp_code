@@ -8,8 +8,11 @@
   <arg name="fcu_url" default="udp://:14540@127.0.0.1:14557"/>
 
   <!-- For mission controller -->
-  <arg name="odom_topic" default="/mavros/local_position/odom"/>
+  <!-- Odometry used by mission controller (world frame W) -->
+  <arg name="odom_topic" default="/Odometry"/>
   <arg name="use_fastlio" default="false"/>
+  <!-- If true, forward odom_topic to /mavros/vision_pose/pose -->
+  <arg name="use_vision_pose" default="true"/>
 
   <!-- 1) Gazebo world -->
   <include file="$(find gazebo_ros)/launch/empty_world.launch">
@@ -41,6 +44,14 @@
           args="0 0 0.1 0 0 0 base_link livox_frame"/>
   </group>
 
+  <group if="$(arg use_vision_pose)">
+    <node name="odom_to_pose" pkg="odom_to_pose" type="odom_to_pose_node" output="screen">
+      <rosparam file="$(find odom_to_pose)/config/odom_to_pose.yaml" command="load"/>
+      <param name="input_topic" value="$(arg odom_topic)"/>
+      <param name="yaw_only" value="false"/>
+    </node>
+  </group>
+
   <!-- 5) Mission controller -->
   <node name="mission_controller_node" pkg="uav_main_controller" type="mission_controller_node" output="screen">
     <rosparam file="$(find uav_main_controller)/config/mission.yaml" command="load"/>
@@ -48,4 +59,3 @@
     <param name="odom_topic" value="$(arg odom_topic)"/>
   </node>
 </launch>
-

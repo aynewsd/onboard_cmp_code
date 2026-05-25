@@ -27,7 +27,7 @@ public:
     double y_mm{0.0};
   };
 
-  struct EnuPoint
+  struct WorldPoint
   {
     double x{0.0};
     double y{0.0};
@@ -87,7 +87,9 @@ private:
   geometry_msgs::PoseStamped makePose(double x, double y, double z, double yaw_rad) const;
   static geometry_msgs::Quaternion yawToQuaternion(double yaw_rad);
 
-  EnuPoint mapToEnu(const MapPointMm& p_mm, double z_m) const;
+  // Convert task map(mm) coordinates into world frame W(m).
+  // W is the FastLIO first-frame world: +X forward, +Y left, +Z up.
+  WorldPoint mapToWorld(const MapPointMm& p_mm, double z_m) const;
   bool reached(const geometry_msgs::PoseStamped& target) const;
   geometry_msgs::PoseStamped stepToward(const geometry_msgs::PoseStamped& from,
                                         const geometry_msgs::PoseStamped& to,
@@ -112,7 +114,7 @@ private:
   void tickServo(const ros::Time& now);
 
   // -----------------------------
-  // RC解析（单独拎出来，你后续填充实现）
+  // RC解析（单独拎出来）
   // -----------------------------
   struct RcDropSelection
   {
@@ -180,7 +182,8 @@ private:
   double odom_timeout_s_{0.5};
 
   MapPointMm map_origin_mm_{1500.0, 3000.0};
-  bool map_to_enu_y_inverted_{true};
+  // Map(mm) -> W(m): if true, invert Y axis (map Y opposite to W +Y).
+  bool map_to_w_y_inverted_{true};
 
   MapPointMm takeoff_mm_{1500.0, 3000.0};
   MapPointMm obstacle_mm_{5800.0, 3000.0};

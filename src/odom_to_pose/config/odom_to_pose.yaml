@@ -1,10 +1,10 @@
-input_topic: "/Odometry"
-output_topic: "/mavros/vision_pose/pose"
+input_topic: "/fastlio/odom"
+output_odometry_topic: "/Odometry"
+output_vision_topic: "/mavros/vision_pose/pose"
 
-# Frame ids for output PoseStamped (leave empty to keep original header.frame_id)
+# Frame id for corrected /Odometry and /mavros/vision_pose/pose
 output_frame_id: "map"
 
-# If true, drop odom->pose.orientation and publish yaw-only quaternion from odom
-# (default false: forward full quaternion as-is)
+# If true, drop full orientation when publishing vision pose and keep yaw only
+# Corrected /Odometry always publishes the full transformed quaternion.
 yaw_only: false
-

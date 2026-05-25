@@ -45,10 +45,11 @@ rc_topic: "/mavros/rc/in"          # MAVROS RC input
 failsafe_hover_timeout_s: 10.0    # hover waiting for RC takeover, then LAND
 odom_timeout_s: 0.5               # if no odom update for this long -> failsafe
 
-# Map-coordinate conversion (mm -> m)
-# Map axes aligned with UAV at start; Y is inverted when converting (per requirement).
+# Map-coordinate conversion (mm -> m) into world frame W (FastLIO first-frame world)
+# W axes: +X forward (map +X), +Y left, +Z up.
+# Map Y is opposite to W +Y, so invert Y when converting.
 map_origin_mm: [1500.0, 3000.0]   # takeoff point in map coordinates (mm)
-map_to_enu_y_inverted: true
+map_to_w_y_inverted: true
 
 # Mission points in map coordinates (mm)
 takeoff_mm: [1500.0, 3000.0]

@@ -2,7 +2,7 @@
 <package format="2">
   <name>odom_to_out</name>
   <version>0.0.1</version>
-  <description>Forward /Odometry to /mavros/odometry/out with ENU->NED conversion</description>
+  <description>Forward /Odometry to /mavros/odometry/out (legacy/optional adapter; not used in W+vision_pose main flow)</description>
   <maintainer email="your@email.com">Your Name</maintainer>
   <license>BSD</license>
 
@@ -13,4 +13,3 @@
   <depend>geometry_msgs</depend>
   <depend>tf2</depend>
 </package>
-
