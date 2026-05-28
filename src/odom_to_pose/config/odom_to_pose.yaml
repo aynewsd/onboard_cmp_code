@@ -9,13 +9,10 @@ output_frame_id: "map"
 # Corrected /Odometry always publishes the full transformed quaternion.
 yaw_only: false
 
-# 雷达到机体系的静态平移外参，单位：米。
-# 这里表示“机体原点在雷达坐标系下的位置”。
-sensor_to_body_offset_x: 0.0
-sensor_to_body_offset_y: 0.0
-sensor_to_body_offset_z: -0.08
+# 机体原点在雷达坐标系下的静态位置，单位：米
+body_in_lidar_x: 0.0
+body_in_lidar_y: 0.0
+body_in_lidar_z: -0.08
 
-# 雷达到机体系的静态偏航外参，单位：弧度。
-# 当前雷达：x后 y右 z上；目标机体系/W体轴：x前 y左 z上，因此是绕z轴180度。
-apply_sensor_to_body_yaw: true
-sensor_to_body_yaw_rad: 3.141592653589793
+# 雷达坐标系 -> 机体坐标系的固定偏航，单位：弧度
+lidar_to_body_yaw_rad: 3.141592653589793
