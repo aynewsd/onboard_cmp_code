@@ -10,6 +10,7 @@
 #include <mavros_msgs/CommandBool.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
+#include <tf2/LinearMath/Quaternion.h>
 
 // TCP通信与线程相关
 #include <sys/socket.h>
@@ -38,6 +39,10 @@ private:
     bool setOffboardMode();
     bool armUAV();
     void publishSetpoint();
+    geometry_msgs::PoseStamped compensateWToMavros(const geometry_msgs::PoseStamped& pose) const;
+    static geometry_msgs::Quaternion yawToQuaternion(double yaw_rad);
+    static geometry_msgs::Quaternion quatMultiply(const geometry_msgs::Quaternion& a, const geometry_msgs::Quaternion& b);
+    static geometry_msgs::Quaternion quatNormalize(const geometry_msgs::Quaternion& q);
 
     // -------------------------- 新增TCP地面站交互相关 --------------------------
     bool startTcpServer();               // 启动TCP服务端（机载为服务端，匹配用户示例）

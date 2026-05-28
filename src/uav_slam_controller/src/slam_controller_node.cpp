@@ -1,6 +1,11 @@
 #include "uav_slam_controller/slam_controller.h"
 #include <cmath>
 
+namespace
+{
+constexpr double kHalfPi = 1.57079632679489661923;
+}
+
 // -------------------------- 构造与析构函数 --------------------------
 SlamController::SlamController(ros::NodeHandle& nh) 
 : nh_(nh), tf_listener_(tf_buffer_), server_fd_(-1), client_fd_(-1), tcp_running_(false),
@@ -87,10 +92,54 @@ bool SlamController::armUAV()
     return arm_client_.call(arm_msg) && arm_msg.response.success;
 }
 
+geometry_msgs::Quaternion SlamController::yawToQuaternion(double yaw_rad)
+{
+    geometry_msgs::Quaternion q;
+    q.x = 0.0;
+    q.y = 0.0;
+    q.z = std::sin(yaw_rad * 0.5);
+    q.w = std::cos(yaw_rad * 0.5);
+    return q;
+}
+
+geometry_msgs::Quaternion SlamController::quatMultiply(const geometry_msgs::Quaternion& a,
+                                                       const geometry_msgs::Quaternion& b)
+{
+    geometry_msgs::Quaternion out;
+    out.w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
+    out.x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y;
+    out.y = a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x;
+    out.z = a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w;
+    return out;
+}
+
+geometry_msgs::Quaternion SlamController::quatNormalize(const geometry_msgs::Quaternion& q)
+{
+    const double norm = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    if(norm < 1e-12) return q;
+    geometry_msgs::Quaternion out = q;
+    out.x /= norm;
+    out.y /= norm;
+    out.z /= norm;
+    out.w /= norm;
+    return out;
+}
+
+geometry_msgs::PoseStamped SlamController::compensateWToMavros(const geometry_msgs::PoseStamped& pose) const
+{
+    geometry_msgs::PoseStamped out = pose;
+    out.pose.position.x = -pose.pose.position.y;
+    out.pose.position.y = pose.pose.position.x;
+    out.pose.position.z = pose.pose.position.z;
+    const geometry_msgs::Quaternion q_rot = yawToQuaternion(kHalfPi);
+    out.pose.orientation = quatNormalize(quatMultiply(q_rot, pose.pose.orientation));
+    return out;
+}
+
 void SlamController::publishSetpoint()
 {
     target_pose_.header.stamp = ros::Time::now();
-    setpoint_pub_.publish(target_pose_);
+    setpoint_pub_.publish(compensateWToMavros(target_pose_));
 }
 
 // -------------------------- 新增TCP服务端启动函数 --------------------------
