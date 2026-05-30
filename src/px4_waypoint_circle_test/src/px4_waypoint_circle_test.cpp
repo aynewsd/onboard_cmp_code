@@ -16,19 +16,18 @@
 // 说明
 // ============================================================
 // 本节点用于 PX4 + MAVROS 的 OFFBOARD 位置控制测试，流程尽量精简：
-// 1) 起飞到指定高度（只改变 Z，高度到位即可）
-// 2) 水平飞到一个目标航点（相对起飞点偏移）
-// 3) 悬停一段时间
-// 4) 以该航点为圆心，半径 1m 绕圈飞行 N 圈
-// 5) 输出每圈耗时与平均每圈耗时，然后切 AUTO.LAND
+// 1) 进入 OFFBOARD 并解锁
+// 2) 飞到圆周起点：(circle_radius, 0, circle_z)
+// 3) 以固定世界系圆心 (0, 0, circle_z)，半径 circle_radius 绕圈飞行 N 圈
+// 4) 输出每圈耗时与平均每圈耗时，然后切 AUTO.LAND
 //
 // 注意：
 // - PX4 进入 OFFBOARD 前必须先持续收到 setpoint（通常 >= 1s 且频率 >= 2Hz）。
 // - 本示例采用：预发送 setpoint -> ARM -> 循环请求 OFFBOARD，直到 mode==OFFBOARD。
-// - 里程计默认使用 /Odometry（ENU 坐标系）。发布的 setpoint 同样按 ENU（MAVROS local）。
-// - 当前工程约定世界系为 W（FastLIO 第一帧世界，x前y左z上），但 MAVROS 接口存在固定坐标约定。
-//   实测表现为：期望在 W 下飞到 (x,y)，实际会飞到 (y,-x)（顺时针 90°）。
-//   因此在发布到 /mavros/setpoint_position/local 前做一次补偿：CCW 90°：x'=-y, y'=x。
+// - 里程计默认使用 /Odometry，即工程统一后的 W 世界系：x前、y左、z上。
+// - 发布到 /mavros/setpoint_position/local 前仍保留航点补偿：
+//   W -> MAVROS输入中间系M：x'=-y, y'=x, z'=z。
+//   MAVROS 后续会隐含把该输入转换到 PX4 内部坐标，不能把 W 系航点原样发给 MAVROS。
 //
 // 代码风格参考 fastlio_px4_waypoint.cpp：使用全局变量保存 state/odom。
 // ============================================================
@@ -37,7 +36,7 @@
 // 全局状态（与 fastlio_px4_waypoint.cpp 保持一致的简洁写法）
 // -----------------------------
 mavros_msgs::State g_state;        // 飞控状态：连接/模式/是否解锁等
-nav_msgs::Odometry g_odom;         // 当前里程计（默认 ENU）
+nav_msgs::Odometry g_odom;         // 当前里程计（W世界系：x前、y左、z上）
 bool g_odom_ready = false;         // 里程计是否已就绪（收到过非零时间戳）
 
 // Callbacks
@@ -105,10 +104,7 @@ int main(int argc, char** argv)
   std::string odom_topic = "/Odometry";
   double publish_rate = 20.0;
   double position_tolerance = 0.25;
-  double takeoff_z = 1.4;
-  double waypoint_x_offset = 2.0;
-  double waypoint_y_offset = 0.0;
-  double hover_time = 3.0;
+  double circle_z = 1.4;
   double circle_radius = 1.0;
   int circle_laps = 10;
   double circle_period = 10.0;
@@ -118,18 +114,15 @@ int main(int argc, char** argv)
   nh.param<std::string>("odom_topic", odom_topic, odom_topic);
   nh.param<double>("publish_rate", publish_rate, publish_rate);
   nh.param<double>("position_tolerance", position_tolerance, position_tolerance);
-  nh.param<double>("takeoff_z", takeoff_z, takeoff_z);
-  nh.param<double>("waypoint_x_offset", waypoint_x_offset, waypoint_x_offset);
-  nh.param<double>("waypoint_y_offset", waypoint_y_offset, waypoint_y_offset);
-  nh.param<double>("hover_time", hover_time, hover_time);
+  nh.param<double>("circle_z", circle_z, circle_z);
   nh.param<double>("circle_radius", circle_radius, circle_radius);
   nh.param<int>("circle_laps", circle_laps, circle_laps);
   nh.param<double>("circle_period", circle_period, circle_period);
   nh.param<double>("timeout", timeout, timeout);
 
   ROS_INFO("Params: odom=%s rate=%.1fHz tol=%.2fm", odom_topic.c_str(), publish_rate, position_tolerance);
-  ROS_INFO("Takeoff z=%.2fm, waypoint offset=(%.2f, %.2f)m", takeoff_z, waypoint_x_offset, waypoint_y_offset);
-  ROS_INFO("Circle: r=%.2fm laps=%d period=%.2fs", circle_radius, circle_laps, circle_period);
+  ROS_INFO("Circle center=(0.00, 0.00, %.2f), r=%.2fm laps=%d period=%.2fs",
+           circle_z, circle_radius, circle_laps, circle_period);
 
   // -----------------------------
   // ROS 通信：订阅 state/odom，发布 setpoint，调用解锁与模式切换服务
@@ -163,27 +156,24 @@ int main(int argc, char** argv)
   ROS_INFO("Odometry ready.");
 
   // -----------------------------
-  // 定义关键 setpoint（坐标系：ENU）
+  // 定义关键 setpoint（坐标系：W，x前、y左、z上）
   // 说明：
-  // - x: East, y: North, z: Up
-  // - 起飞点取当前里程计位置 (x0,y0)，只把 z 提升到 takeoff_z
-  // - 航点为 (x0+dx, y0+dy, takeoff_z)
+  // - 圆心固定为 W 系 (0,0,circle_z)，不再使用“相对起飞点”的航点。
+  // - 圆周起点固定为 W 系 (circle_radius,0,circle_z)。
+  // - 实际发布前由 publishSetpoint() 统一做 W -> MAVROS输入中间系M 的航点补偿。
   // -----------------------------
-  const double x0 = g_odom.pose.pose.position.x;
-  const double y0 = g_odom.pose.pose.position.y;
+  const double circle_center_x = 0.0;
+  const double circle_center_y = 0.0;
+  const double circle_center_z = circle_z;
 
-  geometry_msgs::PoseStamped sp_takeoff;
-  sp_takeoff.pose.position.x = x0;
-  sp_takeoff.pose.position.y = y0;
-  sp_takeoff.pose.position.z = takeoff_z;
-  sp_takeoff.pose.orientation.w = 1.0;
+  geometry_msgs::PoseStamped sp_circle_start;
+  sp_circle_start.pose.position.x = circle_center_x + circle_radius;
+  sp_circle_start.pose.position.y = circle_center_y;
+  sp_circle_start.pose.position.z = circle_center_z;
+  sp_circle_start.pose.orientation.w = 1.0;
 
-  geometry_msgs::PoseStamped sp_waypoint = sp_takeoff;
-  sp_waypoint.pose.position.x = x0 + waypoint_x_offset;
-  sp_waypoint.pose.position.y = y0 + waypoint_y_offset;
-
-  // 当前指令 setpoint（先用起飞 setpoint 作为初始值）
-  geometry_msgs::PoseStamped sp_cmd = sp_takeoff;
+  // 当前指令 setpoint（先用圆周起点作为初始值）
+  geometry_msgs::PoseStamped sp_cmd = sp_circle_start;
 
   // -----------------------------
   // OFFBOARD 前置要求：预发送 setpoint
@@ -239,24 +229,19 @@ int main(int argc, char** argv)
 
   // -----------------------------
   // 任务阶段（最小状态机）
-  // TAKEOFF: 竖直起飞到 takeoff_z
-  // HORIZONTAL: 水平飞到航点
-  // HOVER: 航点悬停 hover_time
-  // CIRCLE: 以航点为圆心半径 circle_radius 绕 circle_laps 圈
+  // GOTO_START: 飞到圆周起点
+  // CIRCLE: 以固定圆心 (0,0,circle_z) 绕 circle_laps 圈
   // LAND: 切 AUTO.LAND
   // -----------------------------
   enum class Stage
   {
-    TAKEOFF,
-    HORIZONTAL,
-    HOVER,
-    BACK,
+    GOTO_START,
     CIRCLE,
     LAND,
     DONE
   };
 
-  Stage stage = Stage::TAKEOFF;
+  Stage stage = Stage::GOTO_START;
   ros::Time mission_start = ros::Time::now();
   ros::Time stage_start = mission_start;
 
@@ -282,67 +267,18 @@ int main(int argc, char** argv)
     // 核心原则：以固定频率持续发布 setpoint（OFFBOARD 必需）
     switch (stage)
     {
-      case Stage::TAKEOFF:
+      case Stage::GOTO_START:
       {
-        // 目标：保持 XY 不变，把 Z 拉到 takeoff_z
-        sp_cmd = sp_takeoff;
+        // 目标：直接飞到圆周起点 (r,0,circle_z)，后续才开始计圈。
+        sp_cmd = sp_circle_start;
         publishSetpoint(sp_pub, sp_cmd);
 
-        // 到点判定：3D 距离小于 position_tolerance
-        const double err = positionError(sp_takeoff);
-        ROS_INFO_THROTTLE(1.0, "TAKEOFF err=%.2f", err);
+        const double err = positionError(sp_circle_start);
+        ROS_INFO_THROTTLE(1.0, "GOTO_START err=%.2f", err);
         ROS_INFO_THROTTLE(1.0, "Position: x=%.2f, y=%.2f, z=%.2f",g_odom.pose.pose.position.x,g_odom.pose.pose.position.y,g_odom.pose.pose.position.z);
         if (err < position_tolerance)
         {
-          ROS_INFO("TAKEOFF reached.");
-          stage = Stage::HORIZONTAL;
-          stage_start = ros::Time::now();
-        }
-        break;
-      }
-      case Stage::HORIZONTAL:
-      {
-        // 目标：水平飞到航点（高度保持 takeoff_z）
-        sp_cmd = sp_waypoint;
-        publishSetpoint(sp_pub, sp_cmd);
-
-        const double err = positionError(sp_waypoint);
-        ROS_INFO_THROTTLE(1.0, "HORIZONTAL err=%.2f", err);
-        ROS_INFO_THROTTLE(1.0, "Position: x=%.2f, y=%.2f, z=%.2f",g_odom.pose.pose.position.x,g_odom.pose.pose.position.y,g_odom.pose.pose.position.z);
-        if (err < position_tolerance)
-        {
-          ROS_INFO("WAYPOINT reached.");
-          stage = Stage::HOVER;
-          stage_start = ros::Time::now();
-        }
-        break;
-      }
-      case Stage::HOVER:
-      {
-        // 悬停：保持航点位置不变
-        sp_cmd = sp_waypoint;
-        publishSetpoint(sp_pub, sp_cmd);
-
-        if ((ros::Time::now() - stage_start).toSec() >= hover_time)
-        {
-          ROS_INFO("HOVER done (%.1fs). Start circle.", hover_time);
-          stage = Stage::BACK;
-          stage_start = ros::Time::now();
-        }
-        break;
-      }
-      case Stage::BACK:
-      {
-        // 目标：水平飞到航点（高度保持 takeoff_z）
-        sp_cmd = sp_takeoff;
-        publishSetpoint(sp_pub, sp_cmd);
-
-        const double err = positionError(sp_takeoff);
-        ROS_INFO_THROTTLE(1.0, "HORIZONTAL err=%.2f", err);
-        ROS_INFO_THROTTLE(1.0, "Position: x=%.2f, y=%.2f, z=%.2f",g_odom.pose.pose.position.x,g_odom.pose.pose.position.y,g_odom.pose.pose.position.z);
-        if (err < position_tolerance)
-        {
-          ROS_INFO("WAYPOINT reached.");
+          ROS_INFO("Circle start reached.");
           stage = Stage::CIRCLE;
           stage_start = ros::Time::now();
           circle_start = stage_start;
@@ -354,23 +290,19 @@ int main(int argc, char** argv)
       }
       case Stage::CIRCLE:
       {
-        // 绕圈：圆心为航点位置，半径 circle_radius
-        // 圆周参数方程（ENU）：
+        // 绕圈：圆心固定为 W 系 (0,0,circle_z)，半径 circle_radius。
+        // 圆周参数方程（W）：
         //   x = cx + r*cos(theta)
         //   y = cy + r*sin(theta)
         // theta 随时间增长：theta = omega * t
-        const double cx = sp_takeoff.pose.position.x;
-        const double cy = sp_takeoff.pose.position.y;
-        const double cz = sp_takeoff.pose.position.z;
-
         const double t = (ros::Time::now() - circle_start).toSec();
         const double theta = omega * t;
 
         // 生成圆周上的目标点
-        sp_cmd = sp_takeoff;
-        sp_cmd.pose.position.x = cx + circle_radius * std::cos(theta);
-        sp_cmd.pose.position.y = cy + circle_radius * std::sin(theta);
-        sp_cmd.pose.position.z = cz;
+        sp_cmd = sp_circle_start;
+        sp_cmd.pose.position.x = circle_center_x + circle_radius * std::cos(theta);
+        sp_cmd.pose.position.y = circle_center_y + circle_radius * std::sin(theta);
+        sp_cmd.pose.position.z = circle_center_z;
         publishSetpoint(sp_pub, sp_cmd);
 
         // 计算圈数与每圈用时

@@ -2,8 +2,9 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <nav_msgs/Odometry.h>
 
-#include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2/LinearMath/Vector3.h>
 
 #include <cmath>
 #include <string>
@@ -19,36 +20,40 @@ public:
     nh_.param<std::string>("output_frame_id", output_frame_id_, output_frame_id_);
     nh_.param<bool>("yaw_only", yaw_only_, yaw_only_);
 
-    // 雷达安装外参（雷达坐标系下，机体原点的位置）
+    // T^P_B: body origin/orientation expressed in lidar frame P.
+    // P: x back, y right, z up. B: x front, y left, z up.
     nh_.param<double>("body_in_lidar_x", body_in_lidar_x_, body_in_lidar_x_);
     nh_.param<double>("body_in_lidar_y", body_in_lidar_y_, body_in_lidar_y_);
     nh_.param<double>("body_in_lidar_z", body_in_lidar_z_, body_in_lidar_z_);
-
-    // 雷达坐标系 -> 机体坐标系的固定偏航（默认 180deg）
     nh_.param<double>("lidar_to_body_yaw_rad", lidar_to_body_yaw_rad_, lidar_to_body_yaw_rad_);
+
+    // 工程修正偏置：在严格坐标变换算出 T^W_B 后，再给 /Odometry 的位置加一个常量偏置。
+    // 这个参数用于补偿实测中的整体定位零偏，不参与雷达-机体外参计算，避免破坏物理外参。
+    // 因为 /mavros/vision_pose/pose 来自同一个修正后的 T^W_B，所以 PX4收到的位置也会同步修正。
+    nh_.param<double>("odometry_offset_x", odometry_offset_x_, odometry_offset_x_);
+    nh_.param<double>("odometry_offset_y", odometry_offset_y_, odometry_offset_y_);
+    nh_.param<double>("odometry_offset_z", odometry_offset_z_, odometry_offset_z_);
+
+    // T^M_W: W coordinates converted into the MAVROS input frame M.
+    // MAVROS then converts ENU-like input to PX4 NED internally.
+    // To make PX4 see (x, -y, z/down handled by MAVROS), publish M = Rz(+90deg) * W:
+    // (x, y, z)_W -> (-y, x, z)_M.
+    nh_.param<double>("world_to_mavros_yaw_rad", world_to_mavros_yaw_rad_, world_to_mavros_yaw_rad_);
 
     sub_ = nh_.subscribe<nav_msgs::Odometry>(input_topic_, 50, &OdomToPose::callback, this);
     odom_pub_ = nh_.advertise<nav_msgs::Odometry>(output_odometry_topic_, 50);
     vision_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(output_vision_topic_, 50);
 
-    ROS_INFO("odom_to_pose: %s -> %s + %s", input_topic_.c_str(), output_odometry_topic_.c_str(), output_vision_topic_.c_str());
+    ROS_INFO("odom_to_pose: %s -> %s + %s",
+             input_topic_.c_str(), output_odometry_topic_.c_str(), output_vision_topic_.c_str());
   }
 
 private:
-  static geometry_msgs::Quaternion toMsg(const tf2::Quaternion& q)
+  struct Transform
   {
-    geometry_msgs::Quaternion msg;
-    msg.x = q.x();
-    msg.y = q.y();
-    msg.z = q.z();
-    msg.w = q.w();
-    return msg;
-  }
-
-  static tf2::Quaternion fromMsg(const geometry_msgs::Quaternion& q)
-  {
-    return tf2::Quaternion(q.x, q.y, q.z, q.w);
-  }
+    tf2::Quaternion q;  // R^parent_child
+    tf2::Vector3 t;     // p^parent_child
+  };
 
   static tf2::Quaternion yawQuat(double yaw_rad)
   {
@@ -58,10 +63,73 @@ private:
     return q;
   }
 
+  static tf2::Quaternion fromMsg(const geometry_msgs::Quaternion& q)
+  {
+    tf2::Quaternion out(q.x, q.y, q.z, q.w);
+    out.normalize();
+    return out;
+  }
+
+  static geometry_msgs::Quaternion toMsg(const tf2::Quaternion& q)
+  {
+    tf2::Quaternion n = q;
+    n.normalize();
+    geometry_msgs::Quaternion msg;
+    msg.x = n.x();
+    msg.y = n.y();
+    msg.z = n.z();
+    msg.w = n.w();
+    return msg;
+  }
+
+  static tf2::Vector3 rotate(const tf2::Quaternion& q, const tf2::Vector3& v)
+  {
+    return tf2::Matrix3x3(q) * v;
+  }
+
+  static Transform compose(const Transform& a_b, const Transform& b_c)
+  {
+    // T^A_C = T^A_B * T^B_C
+    Transform a_c;
+    a_c.q = a_b.q * b_c.q;
+    a_c.q.normalize();
+    a_c.t = a_b.t + rotate(a_b.q, b_c.t);
+    return a_c;
+  }
+
+  static Transform inverse(const Transform& a_b)
+  {
+    // T^B_A = inv(T^A_B)
+    Transform b_a;
+    b_a.q = a_b.q.inverse();
+    b_a.q.normalize();
+    b_a.t = rotate(b_a.q, -a_b.t);
+    return b_a;
+  }
+
+  static Transform transformFromOdom(const nav_msgs::Odometry& odom)
+  {
+    Transform out;
+    out.q = fromMsg(odom.pose.pose.orientation);
+    out.t = tf2::Vector3(odom.pose.pose.position.x,
+                         odom.pose.pose.position.y,
+                         odom.pose.pose.position.z);
+    return out;
+  }
+
+  static geometry_msgs::Pose poseFromTransform(const Transform& transform)
+  {
+    geometry_msgs::Pose pose;
+    pose.position.x = transform.t.x();
+    pose.position.y = transform.t.y();
+    pose.position.z = transform.t.z();
+    pose.orientation = toMsg(transform.q);
+    return pose;
+  }
+
   static geometry_msgs::Quaternion yawOnly(const geometry_msgs::Quaternion& q_in)
   {
-    tf2::Quaternion q = fromMsg(q_in);
-    tf2::Matrix3x3 m(q);
+    tf2::Matrix3x3 m(fromMsg(q_in));
     double roll = 0.0;
     double pitch = 0.0;
     double yaw = 0.0;
@@ -69,99 +137,76 @@ private:
     return toMsg(yawQuat(yaw));
   }
 
-  static geometry_msgs::Quaternion multiply(const geometry_msgs::Quaternion& a,
-                                            const geometry_msgs::Quaternion& b)
+  Transform staticTPB() const
   {
-    geometry_msgs::Quaternion out;
-    out.w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
-    out.x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y;
-    out.y = a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x;
-    out.z = a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w;
-    return out;
+    // T^P_B: P is 8 cm above B, so B origin is z=-0.08 in P by default.
+    Transform p_b;
+    p_b.q = yawQuat(lidar_to_body_yaw_rad_);
+    p_b.t = tf2::Vector3(body_in_lidar_x_, body_in_lidar_y_, body_in_lidar_z_);
+    return p_b;
   }
 
-  static geometry_msgs::Quaternion normalize(const geometry_msgs::Quaternion& q)
+  Transform staticTOW() const
   {
-    const double n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
-    if (n < 1e-12) return q;
-    geometry_msgs::Quaternion out = q;
-    out.x /= n;
-    out.y /= n;
-    out.z /= n;
-    out.w /= n;
-    return out;
+    // Initial condition: P coincides with O and B coincides with W.
+    // Therefore the world offset T^O_W is the same rigid transform as T^P_B.
+    return staticTPB();
   }
 
-  static geometry_msgs::PoseStamped poseFromOdom(const nav_msgs::Odometry& odom)
+  Transform staticTMW() const
   {
-    geometry_msgs::PoseStamped pose;
-    pose.header = odom.header;
-    pose.pose = odom.pose.pose;
-    return pose;
+    Transform m_w;
+    m_w.q = yawQuat(world_to_mavros_yaw_rad_);
+    m_w.t = tf2::Vector3(0.0, 0.0, 0.0);
+    return m_w;
   }
 
-  geometry_msgs::PoseStamped fastlioToWorldPose(const nav_msgs::Odometry& in) const
+  Transform fastlioToWorldBody(const nav_msgs::Odometry& in) const
   {
-    geometry_msgs::PoseStamped out = poseFromOdom(in);
-
-    // /fastlio/odom 已经是第一帧世界系下的位姿；
-    // 这里做的只是“雷达安装位姿”到“机体位姿”的静态刚体修正。
-    // 约定：
-    //   雷达: x后 y右 z上
-    //   机体: x前 y左 z上
-    // 所以固定偏航差为 180deg。
-    const geometry_msgs::Quaternion q_sensor_world = in.pose.pose.orientation;
-    const geometry_msgs::Quaternion q_body_sensor = toMsg(yawQuat(lidar_to_body_yaw_rad_));
-    out.pose.orientation = normalize(multiply(q_sensor_world, q_body_sensor));
-
-    // 位置外参：把“机体原点”从雷达原点平移出来。
-    // 公式：p_body_world = p_lidar_world + R_world_lidar * t_lidar_body
-    const tf2::Quaternion q_world_sensor = fromMsg(in.pose.pose.orientation);
-    const tf2::Matrix3x3 rot_world_sensor(q_world_sensor);
-    const tf2::Vector3 t_sensor_body(body_in_lidar_x_, body_in_lidar_y_, body_in_lidar_z_);
-    const tf2::Vector3 t_world_body = rot_world_sensor * t_sensor_body;
-
-    out.pose.position.x = in.pose.pose.position.x + t_world_body.x();
-    out.pose.position.y = in.pose.pose.position.y + t_world_body.y();
-    out.pose.position.z = in.pose.pose.position.z + t_world_body.z();
-
-    return out;
+    // Known:
+    //   /fastlio/odom = T^O_P
+    //   static T^P_B
+    //   static T^O_W
+    // Need:
+    //   /Odometry = T^W_B = T^W_O * T^O_P * T^P_B
+    const Transform o_p = transformFromOdom(in);
+    const Transform p_b = staticTPB();
+    const Transform w_o = inverse(staticTOW());
+    return compose(compose(w_o, o_p), p_b);
   }
 
-  geometry_msgs::PoseStamped worldToMavrosVision(const geometry_msgs::PoseStamped& in) const
+  Transform worldBodyToMavrosBody(const Transform& w_b) const
   {
-    geometry_msgs::PoseStamped out = in;
+    // Need:
+    //   /mavros/vision_pose/pose = T^M_B = T^M_W * T^W_B
+    return compose(staticTMW(), w_b);
+  }
 
-    // 这里的 W 系是 x前 y左 z上。
-    // MAVROS 视觉输入按 ROS 里程计习惯走 ENU 语义，再由 MAVROS 内部转 PX4。
-    // 所以这里先把 W 变成 MAVROS 期望的 ENU 位置/姿态补偿。
-    out.pose.position.x = in.pose.position.y;
-    out.pose.position.y = -in.pose.position.x;
-    out.pose.position.z = in.pose.position.z;
-    // 正确：FLU -> ENU
-    tf2::Quaternion q_world_old_body = fromMsg(in.pose.orientation);
-    tf2::Quaternion q_world_new_world_old = yawQuat(-M_PI_2);
-    tf2::Quaternion q_world_new_body = q_world_new_world_old * q_world_old_body;
-    q_world_new_body.normalize();
-
-    out.pose.orientation = toMsg(q_world_new_body);
-    return out;
+  Transform applyOdometryOffset(const Transform& w_b) const
+  {
+    // 工程偏置定义在 W 世界系下，直接修正机体原点 p^W_B。
+    // 只修正位置，不修正姿态；例如 /Odometry.z 实测低 0.12m，则设置 odometry_offset_z=0.12。
+    Transform corrected = w_b;
+    corrected.t += tf2::Vector3(odometry_offset_x_, odometry_offset_y_, odometry_offset_z_);
+    return corrected;
   }
 
   void callback(const nav_msgs::Odometry::ConstPtr& msg)
   {
-    geometry_msgs::PoseStamped world_pose = fastlioToWorldPose(*msg);
+    const Transform w_b = applyOdometryOffset(fastlioToWorldBody(*msg));
+    const Transform m_b = worldBodyToMavrosBody(w_b);
 
-    nav_msgs::Odometry corrected_odom = *msg;
-    corrected_odom.header.stamp = msg->header.stamp;
-    corrected_odom.header.frame_id = output_frame_id_;
-    corrected_odom.child_frame_id = output_frame_id_;
-    corrected_odom.pose.pose = world_pose.pose;
-    odom_pub_.publish(corrected_odom);
+    nav_msgs::Odometry odom = *msg;
+    odom.header.stamp = msg->header.stamp;
+    odom.header.frame_id = output_frame_id_;
+    odom.child_frame_id = "base_link";
+    odom.pose.pose = poseFromTransform(w_b);
+    odom_pub_.publish(odom);
 
-    geometry_msgs::PoseStamped vision = worldToMavrosVision(world_pose);
+    geometry_msgs::PoseStamped vision;
     vision.header.stamp = msg->header.stamp;
     vision.header.frame_id = output_frame_id_;
+    vision.pose = poseFromTransform(m_b);
     if (yaw_only_) vision.pose.orientation = yawOnly(vision.pose.orientation);
     vision_pub_.publish(vision);
   }
@@ -182,6 +227,10 @@ private:
   double body_in_lidar_y_{0.0};
   double body_in_lidar_z_{-0.08};
   double lidar_to_body_yaw_rad_{M_PI};
+  double odometry_offset_x_{0.0};
+  double odometry_offset_y_{0.0};
+  double odometry_offset_z_{0.0};
+  double world_to_mavros_yaw_rad_{M_PI_2};
 };
 
 int main(int argc, char** argv)

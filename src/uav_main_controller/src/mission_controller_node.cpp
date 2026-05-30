@@ -212,10 +212,10 @@ geometry_msgs::PoseStamped MissionController::computeDetour(const geometry_msgs:
                                                            bool avoid_ring_zone) const
 {
   // Detour strategy:
-  // - If obstacle is the issue: go to a point tangent-like by offsetting Y away from obstacle center.
-  // - If ring zone is the issue: go around by offsetting Y outside the rectangle boundary.
+  // - 单点绕行，不做全局规划。
+  // - 优先把绕行点放在“目标点前方”的同一条 x 上，即先斜飞到绕行点，再直飞目标点。
+  //   这样比“先横移再前进”更不容易再次擦到障碍物。
   geometry_msgs::PoseStamped detour = to;
-  detour.pose.position.x = from.pose.position.x;  // first move sideways
 
   const double ax = from.pose.position.x;
   const double ay = from.pose.position.y;
@@ -244,19 +244,62 @@ geometry_msgs::PoseStamped MissionController::computeDetour(const geometry_msgs:
   }
   const bool hit_ring_rect = want_ring && segIntersectsRect2d(ax, ay, bx, by, ring_rect);
 
+  auto candidateIsSafe = [&](double cand_y) -> bool {
+    geometry_msgs::PoseStamped cand = to;
+    cand.pose.position.x = to.pose.position.x;
+    cand.pose.position.y = cand_y;
+    cand.pose.position.z = to.pose.position.z;
+    return !needsDetour(from, cand, avoid_ring_zone) && !needsDetour(cand, to, avoid_ring_zone);
+  };
+
+  bool found = false;
   if (hit_obstacle)
   {
-    const double dir = (ay >= obs.y) ? 1.0 : -1.0;
-    detour_y = obs.y + dir * (obs_r + 0.5);
+    const double up_y = obs.y + (obs_r + 0.5);
+    const double down_y = obs.y - (obs_r + 0.5);
+    if (candidateIsSafe(up_y))
+    {
+      detour_y = up_y;
+      found = true;
+    }
+    else if (candidateIsSafe(down_y))
+    {
+      detour_y = down_y;
+      found = true;
+    }
   }
-  if (hit_ring_rect)
+  if (!found && hit_ring_rect)
   {
-    // Go above or below the rectangle depending on current position.
+    // Go above or below the rectangle boundary and prefer the side that is path-safe.
     const double above = ring_rect.max_y + 0.5;
     const double below = ring_rect.min_y - 0.5;
-    detour_y = (ay > ring_rect.max_y) ? above : below;
+    if (candidateIsSafe(above))
+    {
+      detour_y = above;
+      found = true;
+    }
+    else if (candidateIsSafe(below))
+    {
+      detour_y = below;
+      found = true;
+    }
   }
 
+  if (!found)
+  {
+    // Fallback: keep a conservative y-offset if both preferred candidates still intersect.
+    if (hit_obstacle)
+    {
+      const double dir = (ay >= obs.y) ? 1.0 : -1.0;
+      detour_y = obs.y + dir * (obs_r + 0.5);
+    }
+    else if (hit_ring_rect)
+    {
+      detour_y = (ay > ring_rect.max_y) ? (ring_rect.max_y + 0.5) : (ring_rect.min_y - 0.5);
+    }
+  }
+
+  detour.pose.position.x = to.pose.position.x;
   detour.pose.position.y = detour_y;
   return detour;
 }
@@ -631,7 +674,14 @@ void MissionController::tick(const ros::Time& now, double dt)
 
   const std::string land_mode = "AUTO.LAND";  // PX4 mode name
 
-  if (phase_ != Phase::WAIT_FCU && phase_ != Phase::WAIT_ODOM && !odomHealthy(now))
+  // ODOM超时只在正常任务/起飞/移动阶段触发一次FAILSAFE_HOVER。
+  // 进入FAILSAFE_HOVER后即使里程计仍然超时，也不能反复重置failsafe_start_time_，
+  // 否则会一直悬停，永远等不到failsafe_hover_timeout_s_后的自动降落。
+  const bool odom_timeout_sensitive =
+      phase_ != Phase::WAIT_FCU && phase_ != Phase::WAIT_ODOM && phase_ != Phase::FAILSAFE_HOVER &&
+      phase_ != Phase::WAIT_MANUAL && phase_ != Phase::LAND && phase_ != Phase::DONE;
+
+  if (odom_timeout_sensitive && !odomHealthy(now))
   {
     triggerFailsafeHover("ODOM timeout");
     return;
@@ -884,6 +934,12 @@ void MissionController::tick(const ros::Time& now, double dt)
           {
             selected_drop1_ = std::max(1, std::min(4, sel.drop1_image));
             selected_drop2_ = std::max(1, std::min(4, sel.drop2_image));
+            if (selected_drop1_ == selected_drop2_)
+            {
+              ROS_WARN("RC selected duplicate drop IMAGE_%d, fallback to IMAGE_1 and IMAGE_2", selected_drop1_);
+              selected_drop1_ = 1;
+              selected_drop2_ = 2;
+            }
             selected_land_side_ = sel.land_side;
             ROS_INFO("RC selection locked: drop1=IMAGE_%d drop2=IMAGE_%d land_side=%s",
                      selected_drop1_, selected_drop2_, selected_land_side_.c_str());

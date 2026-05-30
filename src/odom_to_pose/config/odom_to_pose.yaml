@@ -9,10 +9,22 @@ output_frame_id: "map"
 # Corrected /Odometry always publishes the full transformed quaternion.
 yaw_only: false
 
-# 机体原点在雷达坐标系下的静态位置，单位：米
+# T^P_B: 机体原点在雷达坐标系P下的静态位置，单位：米
 body_in_lidar_x: 0.0
 body_in_lidar_y: 0.0
-body_in_lidar_z: -0.08
+body_in_lidar_z: -0.123
 
-# 雷达坐标系 -> 机体坐标系的固定偏航，单位：弧度
+# T^P_B: 雷达坐标系P到机体坐标系B的固定偏航，单位：弧度
 lidar_to_body_yaw_rad: 3.141592653589793
+
+# /Odometry位置工程偏置，定义在W世界系下，单位：米
+# 只用于补偿整体零偏，不要用它替代雷达-机体物理外参
+# 例如实测/Odometry.z偏低0.12m，则设置 odometry_offset_z: 0.12
+odometry_offset_x: 0.0
+odometry_offset_y: 0.0
+odometry_offset_z: 0.0
+
+# T^M_W: W系坐标转MAVROS输入中间系M的固定偏航，单位：弧度
+# MAVROS随后会隐含执行 ENU -> NED；这里取 Rz(+90deg)：
+# (x,y,z)_W -> (-y,x,z)_M
+world_to_mavros_yaw_rad: 1.5707963267948966
