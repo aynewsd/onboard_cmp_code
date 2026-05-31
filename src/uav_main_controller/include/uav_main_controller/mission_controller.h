@@ -34,14 +34,6 @@ public:
     double z{0.0};
   };
 
-  struct Rect2D
-  {
-    double min_x{0.0};
-    double max_x{0.0};
-    double min_y{0.0};
-    double max_y{0.0};
-  };
-
 private:
   enum class Phase
   {
@@ -68,6 +60,7 @@ private:
     GOTO_RING_VIEW,
     HOVER_RING_VIEW,
     PASS_RING,
+    GOTO_LAND_MID,
     GOTO_LAND,
     LAND,
     FAILSAFE_HOVER,
@@ -95,16 +88,6 @@ private:
                                         const geometry_msgs::PoseStamped& to,
                                         double dt) const;
   bool odomHealthy(const ros::Time& now) const;
-
-  // Simple path planning helpers (2D)
-  static double distPointToSeg2d(double px, double py, double ax, double ay, double bx, double by);
-  static bool segIntersectsRect2d(double ax, double ay, double bx, double by, const Rect2D& r);
-  bool needsDetour(const geometry_msgs::PoseStamped& from,
-                   const geometry_msgs::PoseStamped& to,
-                   bool avoid_ring_zone) const;
-  geometry_msgs::PoseStamped computeDetour(const geometry_msgs::PoseStamped& from,
-                                          const geometry_msgs::PoseStamped& to,
-                                          bool avoid_ring_zone) const;
 
   void enterPhase(Phase next, const std::string& reason);
   void tick(const ros::Time& now, double dt);
@@ -192,6 +175,7 @@ private:
   MapPointMm special_target_mm_{7500.0, 2000.0};
   MapPointMm ring_view_mm_{7500.0, 4000.0};
   MapPointMm ring_default_mm_{7500.0, 4600.0};
+  MapPointMm land_mid_mm_{3300.0, 5300.0};
   MapPointMm land_left_mm_{1500.0, 1400.0};
   MapPointMm land_right_mm_{1500.0, 4600.0};
   std::string default_land_side_{"left"};
@@ -215,14 +199,6 @@ private:
   bool servo_open_{false};
   ros::Time servo_open_until_;
 
-  // Avoidance parameters
-  double obstacle_size_m_{0.6};          // obstacle footprint (square), meters
-  double obstacle_clearance_m_{0.4};     // extra clearance, meters
-  bool avoid_ring_zone_{true};
-
-  // Two-segment path following for detours
-  bool detour_active_{false};
-  geometry_msgs::PoseStamped detour_pose_;
   geometry_msgs::PoseStamped final_pose_;
 
   // Drop target selection (IMAGE_n) via RC at HOVER_QRCODE

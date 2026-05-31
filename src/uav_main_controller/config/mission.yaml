@@ -28,13 +28,6 @@ hover_ring_view_s: 5.0
 servo_open_time_s: 0.8
 
 # -----------------------------
-# Simple avoidance (2D)
-# -----------------------------
-obstacle_size_m: 0.6              # obstacle footprint is 0.6m x 0.6m
-obstacle_clearance_m: 0.4         # extra clearance around obstacle
-avoid_ring_zone: true             # avoid ring random-zone rectangle except PASS_RING stage
-
-# -----------------------------
 # RC-based drop target selection (no image recognition)
 # -----------------------------
 rc_drop_select_enabled: true
@@ -67,6 +60,8 @@ special_target_mm: [7500.0, 2000.0]
 ring_view_mm: [7500.0, 4000.0]
 ring_default_mm: [7500.0, 4600.0]
 
+# Before final landing point, fly through this midpoint to avoid the only known collision-prone route.
+land_mid_mm: [3300.0, 5300.0]
 land_left_mm: [1500.0, 1400.0]
 land_right_mm: [1500.0, 4600.0]
 default_land_side: "left"         # "left" or "right"; used if RC selection is unavailable

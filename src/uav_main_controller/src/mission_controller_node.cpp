@@ -64,10 +64,6 @@ MissionController::MissionController(ros::NodeHandle& nh) : nh_(nh)
   nh_.param<double>("failsafe_hover_timeout_s", failsafe_hover_timeout_s_, failsafe_hover_timeout_s_);
   nh_.param<double>("odom_timeout_s", odom_timeout_s_, odom_timeout_s_);
 
-  nh_.param<double>("obstacle_size_m", obstacle_size_m_, obstacle_size_m_);
-  nh_.param<double>("obstacle_clearance_m", obstacle_clearance_m_, obstacle_clearance_m_);
-  nh_.param<bool>("avoid_ring_zone", avoid_ring_zone_, avoid_ring_zone_);
-
   nh_.param<bool>("rc_drop_select_enabled", rc_drop_select_enabled_, rc_drop_select_enabled_);
   nh_.param<double>("rc_timeout_s", rc_timeout_s_, rc_timeout_s_);
   std::string rc_topic = "/mavros/rc/in";
@@ -88,6 +84,7 @@ MissionController::MissionController(ros::NodeHandle& nh) : nh_(nh)
   special_target_mm_ = loadPoint2(nh_, "special_target_mm", special_target_mm_.x_mm, special_target_mm_.y_mm);
   ring_view_mm_ = loadPoint2(nh_, "ring_view_mm", ring_view_mm_.x_mm, ring_view_mm_.y_mm);
   ring_default_mm_ = loadPoint2(nh_, "ring_default_mm", ring_default_mm_.x_mm, ring_default_mm_.y_mm);
+  land_mid_mm_ = loadPoint2(nh_, "land_mid_mm", land_mid_mm_.x_mm, land_mid_mm_.y_mm);
   land_left_mm_ = loadPoint2(nh_, "land_left_mm", land_left_mm_.x_mm, land_left_mm_.y_mm);
   land_right_mm_ = loadPoint2(nh_, "land_right_mm", land_right_mm_.x_mm, land_right_mm_.y_mm);
   nh_.param<std::string>("default_land_side", default_land_side_, default_land_side_);
@@ -133,175 +130,6 @@ MissionController::MissionController(ros::NodeHandle& nh) : nh_(nh)
   selected_land_side_ = default_land_side_;
 
   publishMissionState("INIT");
-}
-
-double MissionController::distPointToSeg2d(double px, double py, double ax, double ay, double bx, double by)
-{
-  const double abx = bx - ax;
-  const double aby = by - ay;
-  const double apx = px - ax;
-  const double apy = py - ay;
-  const double ab2 = abx * abx + aby * aby;
-  if (ab2 < 1e-9) return std::sqrt(apx * apx + apy * apy);
-  double t = (apx * abx + apy * aby) / ab2;
-  t = std::max(0.0, std::min(1.0, t));
-  const double cx = ax + t * abx;
-  const double cy = ay + t * aby;
-  const double dx = px - cx;
-  const double dy = py - cy;
-  return std::sqrt(dx * dx + dy * dy);
-}
-
-bool MissionController::segIntersectsRect2d(double ax, double ay, double bx, double by, const Rect2D& r)
-{
-  // Quick reject by bounding box overlap
-  const double minx = std::min(ax, bx);
-  const double maxx = std::max(ax, bx);
-  const double miny = std::min(ay, by);
-  const double maxy = std::max(ay, by);
-  if (maxx < r.min_x || minx > r.max_x || maxy < r.min_y || miny > r.max_y) return false;
-
-  // Conservative sampling is enough for our coarse planning (fast + robust for axis-aligned rect).
-  const int steps = 60;
-  for (int i = 0; i <= steps; ++i)
-  {
-    const double t = static_cast<double>(i) / static_cast<double>(steps);
-    const double x = ax + t * (bx - ax);
-    const double y = ay + t * (by - ay);
-    if (x >= r.min_x && x <= r.max_x && y >= r.min_y && y <= r.max_y) return true;
-  }
-  return false;
-}
-
-bool MissionController::needsDetour(const geometry_msgs::PoseStamped& from,
-                                    const geometry_msgs::PoseStamped& to,
-                                    bool avoid_ring_zone) const
-{
-  const double ax = from.pose.position.x;
-  const double ay = from.pose.position.y;
-  const double bx = to.pose.position.x;
-  const double by = to.pose.position.y;
-
-  // 1) Obstacle avoidance: treat obstacle as a circle with radius = half_size + clearance.
-  const auto obs = mapToWorld(obstacle_mm_, cruise_height_);
-  const double obs_r = 0.5 * obstacle_size_m_ + obstacle_clearance_m_;
-  const double d_obs = distPointToSeg2d(obs.x, obs.y, ax, ay, bx, by);
-  const bool hit_obstacle = d_obs < obs_r;
-
-  // 2) Ring random-zone avoidance: rectangle in map coords [(6300,6000),(8700,4200)] mm.
-  // Convert to world frame W rectangle according to current map->W rule (including y inversion).
-  Rect2D ring_rect;
-  if (avoid_ring_zone)
-  {
-    const MapPointMm p1{6300.0, 6000.0};
-    const MapPointMm p2{8700.0, 4200.0};
-    const auto e1 = mapToWorld(p1, 0.0);
-    const auto e2 = mapToWorld(p2, 0.0);
-    ring_rect.min_x = std::min(e1.x, e2.x);
-    ring_rect.max_x = std::max(e1.x, e2.x);
-    ring_rect.min_y = std::min(e1.y, e2.y);
-    ring_rect.max_y = std::max(e1.y, e2.y);
-  }
-  const bool hit_ring_rect = avoid_ring_zone && segIntersectsRect2d(ax, ay, bx, by, ring_rect);
-
-  return hit_obstacle || hit_ring_rect;
-}
-
-geometry_msgs::PoseStamped MissionController::computeDetour(const geometry_msgs::PoseStamped& from,
-                                                           const geometry_msgs::PoseStamped& to,
-                                                           bool avoid_ring_zone) const
-{
-  // Detour strategy:
-  // - 单点绕行，不做全局规划。
-  // - 优先把绕行点放在“目标点前方”的同一条 x 上，即先斜飞到绕行点，再直飞目标点。
-  //   这样比“先横移再前进”更不容易再次擦到障碍物。
-  geometry_msgs::PoseStamped detour = to;
-
-  const double ax = from.pose.position.x;
-  const double ay = from.pose.position.y;
-  const double bx = to.pose.position.x;
-  const double by = to.pose.position.y;
-
-  double detour_y = ay;
-
-  // Recompute hit flags to decide which detour to apply.
-  const auto obs = mapToWorld(obstacle_mm_, cruise_height_);
-  const double obs_r = 0.5 * obstacle_size_m_ + obstacle_clearance_m_;
-  const bool hit_obstacle = distPointToSeg2d(obs.x, obs.y, ax, ay, bx, by) < obs_r;
-
-  Rect2D ring_rect;
-  const bool want_ring = avoid_ring_zone;
-  if (want_ring)
-  {
-    const MapPointMm p1{6300.0, 6000.0};
-    const MapPointMm p2{8700.0, 4200.0};
-    const auto e1 = mapToWorld(p1, 0.0);
-    const auto e2 = mapToWorld(p2, 0.0);
-    ring_rect.min_x = std::min(e1.x, e2.x);
-    ring_rect.max_x = std::max(e1.x, e2.x);
-    ring_rect.min_y = std::min(e1.y, e2.y);
-    ring_rect.max_y = std::max(e1.y, e2.y);
-  }
-  const bool hit_ring_rect = want_ring && segIntersectsRect2d(ax, ay, bx, by, ring_rect);
-
-  auto candidateIsSafe = [&](double cand_y) -> bool {
-    geometry_msgs::PoseStamped cand = to;
-    cand.pose.position.x = to.pose.position.x;
-    cand.pose.position.y = cand_y;
-    cand.pose.position.z = to.pose.position.z;
-    return !needsDetour(from, cand, avoid_ring_zone) && !needsDetour(cand, to, avoid_ring_zone);
-  };
-
-  bool found = false;
-  if (hit_obstacle)
-  {
-    const double up_y = obs.y + (obs_r + 0.5);
-    const double down_y = obs.y - (obs_r + 0.5);
-    if (candidateIsSafe(up_y))
-    {
-      detour_y = up_y;
-      found = true;
-    }
-    else if (candidateIsSafe(down_y))
-    {
-      detour_y = down_y;
-      found = true;
-    }
-  }
-  if (!found && hit_ring_rect)
-  {
-    // Go above or below the rectangle boundary and prefer the side that is path-safe.
-    const double above = ring_rect.max_y + 0.5;
-    const double below = ring_rect.min_y - 0.5;
-    if (candidateIsSafe(above))
-    {
-      detour_y = above;
-      found = true;
-    }
-    else if (candidateIsSafe(below))
-    {
-      detour_y = below;
-      found = true;
-    }
-  }
-
-  if (!found)
-  {
-    // Fallback: keep a conservative y-offset if both preferred candidates still intersect.
-    if (hit_obstacle)
-    {
-      const double dir = (ay >= obs.y) ? 1.0 : -1.0;
-      detour_y = obs.y + dir * (obs_r + 0.5);
-    }
-    else if (hit_ring_rect)
-    {
-      detour_y = (ay > ring_rect.max_y) ? (ring_rect.max_y + 0.5) : (ring_rect.min_y - 0.5);
-    }
-  }
-
-  detour.pose.position.x = to.pose.position.x;
-  detour.pose.position.y = detour_y;
-  return detour;
 }
 
 void MissionController::stateCallback(const mavros_msgs::State::ConstPtr& msg)
@@ -613,7 +441,6 @@ void MissionController::enterPhase(Phase next, const std::string& reason)
   phase_ = next;
   phase_enter_time_ = ros::Time::now();
   segment_start_time_ = phase_enter_time_;
-  detour_active_ = false;
   // HOVER_IMAGE使用内部小状态机：每次进入新的Phase都重置，避免跨IMAGE串状态
   resetImageHoverStage();
   publishMissionState(reason);
@@ -742,7 +569,7 @@ void MissionController::tick(const ros::Time& now, double dt)
       phase_ == Phase::TAKEOFF || phase_ == Phase::GOTO_OBSTACLE || phase_ == Phase::GOTO_QRCODE ||
       phase_ == Phase::GOTO_IMAGE_1 || phase_ == Phase::GOTO_IMAGE_2 || phase_ == Phase::GOTO_IMAGE_3 ||
       phase_ == Phase::GOTO_IMAGE_4 || phase_ == Phase::GOTO_SPECIAL || phase_ == Phase::GOTO_RING_VIEW ||
-      phase_ == Phase::PASS_RING || phase_ == Phase::GOTO_LAND;
+      phase_ == Phase::PASS_RING || phase_ == Phase::GOTO_LAND_MID || phase_ == Phase::GOTO_LAND;
 
   if (timeout_sensitive && (now - segment_start_time_).toSec() > segment_timeout_s_)
   {
@@ -825,27 +652,10 @@ void MissionController::tick(const ros::Time& now, double dt)
       // Use the "east" point (angle=0) as the default entry point: (cx + r, cy).
       const auto c = mapToWorld(obstacle_mm_, cruise_height_);
       final_pose_ = makePose(c.x + circle_radius_m_, c.y, c.z, 0.0);
-      // While approaching obstacle entry point, still avoid ring zone if enabled.
-      if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring_zone_))
-      {
-        detour_pose_ = computeDetour(setpoint_, final_pose_, avoid_ring_zone_);
-        detour_active_ = true;
-      }
-      goal_pose_ = detour_active_ ? detour_pose_ : final_pose_;
+      goal_pose_ = final_pose_;
       setpoint_ = stepToward(setpoint_, goal_pose_, dt);
       publishSetpointNow(setpoint_);
-      if (reached(goal_pose_))
-      {
-        if (detour_active_)
-        {
-          detour_active_ = false;
-          segment_start_time_ = now;
-        }
-        else
-        {
-          enterPhase(Phase::CIRCLE_OBSTACLE, "CIRCLE_OBSTACLE");
-        }
-      }
+      if (reached(goal_pose_)) enterPhase(Phase::CIRCLE_OBSTACLE, "CIRCLE_OBSTACLE");
       break;
     }
     case Phase::CIRCLE_OBSTACLE:
@@ -867,26 +677,10 @@ void MissionController::tick(const ros::Time& now, double dt)
     {
       const auto p = mapToWorld(qrcode_mm_, cruise_height_);
       final_pose_ = makePose(p.x, p.y, p.z, 0.0);
-      if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring_zone_))
-      {
-        detour_pose_ = computeDetour(setpoint_, final_pose_, avoid_ring_zone_);
-        detour_active_ = true;
-      }
-      goal_pose_ = detour_active_ ? detour_pose_ : final_pose_;
+      goal_pose_ = final_pose_;
       setpoint_ = stepToward(setpoint_, goal_pose_, dt);
       publishSetpointNow(setpoint_);
-      if (reached(goal_pose_))
-      {
-        if (detour_active_)
-        {
-          detour_active_ = false;  // switch to final on next tick
-          segment_start_time_ = now;
-        }
-        else
-        {
-          enterPhase(Phase::HOVER_QRCODE, "HOVER_QRCODE");
-        }
-      }
+      if (reached(goal_pose_)) enterPhase(Phase::HOVER_QRCODE, "HOVER_QRCODE");
       break;
     }
     case Phase::HOVER_QRCODE:
@@ -899,26 +693,10 @@ void MissionController::tick(const ros::Time& now, double dt)
     {
       const auto p = mapToWorld(image_targets_mm_.at(0), cruise_height_);
       final_pose_ = makePose(p.x, p.y, p.z, 0.0);
-      if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring_zone_))
-      {
-        detour_pose_ = computeDetour(setpoint_, final_pose_, avoid_ring_zone_);
-        detour_active_ = true;
-      }
-      goal_pose_ = detour_active_ ? detour_pose_ : final_pose_;
+      goal_pose_ = final_pose_;
       setpoint_ = stepToward(setpoint_, goal_pose_, dt);
       publishSetpointNow(setpoint_);
-      if (reached(goal_pose_))
-      {
-        if (detour_active_)
-        {
-          detour_active_ = false;
-          segment_start_time_ = now;
-        }
-        else
-        {
-          enterPhase(Phase::HOVER_IMAGE_1, "HOVER_IMAGE_1");
-        }
-      }
+      if (reached(goal_pose_)) enterPhase(Phase::HOVER_IMAGE_1, "HOVER_IMAGE_1");
       break;
     }
     case Phase::HOVER_IMAGE_1:
@@ -973,26 +751,10 @@ void MissionController::tick(const ros::Time& now, double dt)
     {
       const auto p = mapToWorld(image_targets_mm_.at(1), cruise_height_);
       final_pose_ = makePose(p.x, p.y, p.z, 0.0);
-      if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring_zone_))
-      {
-        detour_pose_ = computeDetour(setpoint_, final_pose_, avoid_ring_zone_);
-        detour_active_ = true;
-      }
-      goal_pose_ = detour_active_ ? detour_pose_ : final_pose_;
+      goal_pose_ = final_pose_;
       setpoint_ = stepToward(setpoint_, goal_pose_, dt);
       publishSetpointNow(setpoint_);
-      if (reached(goal_pose_))
-      {
-        if (detour_active_)
-        {
-          detour_active_ = false;
-          segment_start_time_ = now;
-        }
-        else
-        {
-          enterPhase(Phase::HOVER_IMAGE_2, "HOVER_IMAGE_2");
-        }
-      }
+      if (reached(goal_pose_)) enterPhase(Phase::HOVER_IMAGE_2, "HOVER_IMAGE_2");
       break;
     }
     case Phase::HOVER_IMAGE_2:
@@ -1011,26 +773,10 @@ void MissionController::tick(const ros::Time& now, double dt)
     {
       const auto p = mapToWorld(image_targets_mm_.at(2), cruise_height_);
       final_pose_ = makePose(p.x, p.y, p.z, 0.0);
-      if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring_zone_))
-      {
-        detour_pose_ = computeDetour(setpoint_, final_pose_, avoid_ring_zone_);
-        detour_active_ = true;
-      }
-      goal_pose_ = detour_active_ ? detour_pose_ : final_pose_;
+      goal_pose_ = final_pose_;
       setpoint_ = stepToward(setpoint_, goal_pose_, dt);
       publishSetpointNow(setpoint_);
-      if (reached(goal_pose_))
-      {
-        if (detour_active_)
-        {
-          detour_active_ = false;
-          segment_start_time_ = now;
-        }
-        else
-        {
-          enterPhase(Phase::HOVER_IMAGE_3, "HOVER_IMAGE_3");
-        }
-      }
+      if (reached(goal_pose_)) enterPhase(Phase::HOVER_IMAGE_3, "HOVER_IMAGE_3");
       break;
     }
     case Phase::HOVER_IMAGE_3:
@@ -1049,26 +795,10 @@ void MissionController::tick(const ros::Time& now, double dt)
     {
       const auto p = mapToWorld(image_targets_mm_.at(3), cruise_height_);
       final_pose_ = makePose(p.x, p.y, p.z, 0.0);
-      if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring_zone_))
-      {
-        detour_pose_ = computeDetour(setpoint_, final_pose_, avoid_ring_zone_);
-        detour_active_ = true;
-      }
-      goal_pose_ = detour_active_ ? detour_pose_ : final_pose_;
+      goal_pose_ = final_pose_;
       setpoint_ = stepToward(setpoint_, goal_pose_, dt);
       publishSetpointNow(setpoint_);
-      if (reached(goal_pose_))
-      {
-        if (detour_active_)
-        {
-          detour_active_ = false;
-          segment_start_time_ = now;
-        }
-        else
-        {
-          enterPhase(Phase::HOVER_IMAGE_4, "HOVER_IMAGE_4");
-        }
-      }
+      if (reached(goal_pose_)) enterPhase(Phase::HOVER_IMAGE_4, "HOVER_IMAGE_4");
       break;
     }
     case Phase::HOVER_IMAGE_4:
@@ -1087,26 +817,10 @@ void MissionController::tick(const ros::Time& now, double dt)
     {
       const auto p = mapToWorld(special_target_mm_, cruise_height_);
       final_pose_ = makePose(p.x, p.y, p.z, 0.0);
-      if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring_zone_))
-      {
-        detour_pose_ = computeDetour(setpoint_, final_pose_, avoid_ring_zone_);
-        detour_active_ = true;
-      }
-      goal_pose_ = detour_active_ ? detour_pose_ : final_pose_;
+      goal_pose_ = final_pose_;
       setpoint_ = stepToward(setpoint_, goal_pose_, dt);
       publishSetpointNow(setpoint_);
-      if (reached(goal_pose_))
-      {
-        if (detour_active_)
-        {
-          detour_active_ = false;
-          segment_start_time_ = now;
-        }
-        else
-        {
-          enterPhase(Phase::HOVER_SPECIAL_DROP_3, "HOVER_SPECIAL_DROP_3");
-        }
-      }
+      if (reached(goal_pose_)) enterPhase(Phase::HOVER_SPECIAL_DROP_3, "HOVER_SPECIAL_DROP_3");
       break;
     }
     case Phase::HOVER_SPECIAL_DROP_3:
@@ -1138,26 +852,10 @@ void MissionController::tick(const ros::Time& now, double dt)
       const auto p = mapToWorld(ring_view_mm_, cruise_height_);
       const double yaw = map_to_w_y_inverted_ ? -kHalfPi : kHalfPi;  // face map +Y
       final_pose_ = makePose(p.x, p.y, p.z, yaw);
-      if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring_zone_))
-      {
-        detour_pose_ = computeDetour(setpoint_, final_pose_, avoid_ring_zone_);
-        detour_active_ = true;
-      }
-      goal_pose_ = detour_active_ ? detour_pose_ : final_pose_;
+      goal_pose_ = final_pose_;
       setpoint_ = stepToward(setpoint_, goal_pose_, dt);
       publishSetpointNow(setpoint_);
-      if (reached(goal_pose_))
-      {
-        if (detour_active_)
-        {
-          detour_active_ = false;
-          segment_start_time_ = now;
-        }
-        else
-        {
-          enterPhase(Phase::HOVER_RING_VIEW, "HOVER_RING_VIEW");
-        }
-      }
+      if (reached(goal_pose_)) enterPhase(Phase::HOVER_RING_VIEW, "HOVER_RING_VIEW");
       break;
     }
     case Phase::HOVER_RING_VIEW:
@@ -1170,28 +868,20 @@ void MissionController::tick(const ros::Time& now, double dt)
     {
       const auto ring = mapToWorld(ring_default_mm_, ring_height_);
       final_pose_ = makePose(ring.x, ring.y, ring.z, 0.0);
-      // PASS_RING is intended to go through the ring zone, so disable ring-zone avoidance here.
-      const bool avoid_ring = false;
-      if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring))
-      {
-        detour_pose_ = computeDetour(setpoint_, final_pose_, avoid_ring);
-        detour_active_ = true;
-      }
-      goal_pose_ = detour_active_ ? detour_pose_ : final_pose_;
+      goal_pose_ = final_pose_;
       setpoint_ = stepToward(setpoint_, goal_pose_, dt);
       publishSetpointNow(setpoint_);
-      if (reached(goal_pose_))
-      {
-        if (detour_active_)
-        {
-          detour_active_ = false;
-          segment_start_time_ = now;
-        }
-        else
-        {
-          enterPhase(Phase::GOTO_LAND, "GOTO_LAND");
-        }
-      }
+      if (reached(goal_pose_)) enterPhase(Phase::GOTO_LAND_MID, "GOTO_LAND_MID");
+      break;
+    }
+    case Phase::GOTO_LAND_MID:
+    {
+      const auto p = mapToWorld(land_mid_mm_, cruise_height_);
+      final_pose_ = makePose(p.x, p.y, p.z, 0.0);
+      goal_pose_ = final_pose_;
+      setpoint_ = stepToward(setpoint_, goal_pose_, dt);
+      publishSetpointNow(setpoint_);
+      if (reached(goal_pose_)) enterPhase(Phase::GOTO_LAND, "GOTO_LAND");
       break;
     }
     case Phase::GOTO_LAND:
@@ -1201,26 +891,10 @@ void MissionController::tick(const ros::Time& now, double dt)
       const MapPointMm land = (land_side == "right") ? land_right_mm_ : land_left_mm_;
       const auto p = mapToWorld(land, cruise_height_);
       final_pose_ = makePose(p.x, p.y, p.z, 0.0);
-      if (!detour_active_ && needsDetour(setpoint_, final_pose_, avoid_ring_zone_))
-      {
-        detour_pose_ = computeDetour(setpoint_, final_pose_, avoid_ring_zone_);
-        detour_active_ = true;
-      }
-      goal_pose_ = detour_active_ ? detour_pose_ : final_pose_;
+      goal_pose_ = final_pose_;
       setpoint_ = stepToward(setpoint_, goal_pose_, dt);
       publishSetpointNow(setpoint_);
-      if (reached(goal_pose_))
-      {
-        if (detour_active_)
-        {
-          detour_active_ = false;
-          segment_start_time_ = now;
-        }
-        else
-        {
-          enterPhase(Phase::LAND, "LAND");
-        }
-      }
+      if (reached(goal_pose_)) enterPhase(Phase::LAND, "LAND");
       break;
     }
     case Phase::LAND:
