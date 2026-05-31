@@ -5,27 +5,31 @@ odom_topic: "/Odometry"  # corrected W-frame odometry from odom_to_pose
 control_rate: 20.0                # Hz (should be >= 2Hz)
 reach_tolerance_xy: 0.25          # m
 reach_tolerance_z: 0.20           # m
+drop_reach_tolerance_xy: 0.10     # m, tighter XY tolerance while descending/ascending for drop
 prestream_time_s: 2.0             # s, stream setpoints before OFFBOARD
 
 # Speed limiting (setpoint interpolation)
 max_xy_speed: 1.0                 # m/s
 max_z_speed: 0.6                  # m/s
+goto_obstacle_max_xy_speed: 0.35   # m/s, slower approach near obstacle entry point
 
 # Heights (meters)
 cruise_height: 1.4                # must be >= 1.2
-drop_height: 0.6                  # must be <= 0.8
+drop_height: 0.2                  # must be <= 0.8
 ring_height: 1.6
 
 # Mission timing (seconds)
 segment_timeout_s: 60.0           # per segment travel/hold timeout
-circle_duration_s: 60.0           # obstacle circling duration (test: 60s, real: 300s)
+circle_laps: 10                   # obstacle circling laps
+circle_duration_s: 60.0           # legacy compatibility only; not used for exit
 circle_radius_m: 1.0              # obstacle circling radius
-circle_period_s: 6.0             # seconds per full circle
+circle_period_s: 6.0              # desired seconds per full circle; angular speed is capped by max_xy_speed
 hover_qr_s: 3.0
 hover_image_s: 3.0
 hover_special_s: 3.0
 hover_ring_view_s: 5.0
 servo_open_time_s: 0.8
+drop_stabilize_s: 2.0             # s, hover after descending before opening servo
 
 # -----------------------------
 # RC-based drop target selection (no image recognition)
@@ -59,6 +63,11 @@ image_targets_mm:
 special_target_mm: [7500.0, 2000.0]
 ring_view_mm: [7500.0, 4000.0]
 ring_default_mm: [7500.0, 4600.0]
+
+# Servo drop offsets in map coordinates (mm). Positive x/y follow the map coordinate axes.
+servo1_drop_offset_mm: [35.0, -58.0]
+servo2_drop_offset_mm: [-35.0, -58.0]
+servo3_drop_offset_mm: [0.0, 58.0]
 
 # Before final landing point, fly through this midpoint to avoid the only known collision-prone route.
 land_mid_mm: [3300.0, 5300.0]

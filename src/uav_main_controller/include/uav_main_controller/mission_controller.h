@@ -84,9 +84,15 @@ private:
   // W is the FastLIO first-frame world: +X forward, +Y left, +Z up.
   WorldPoint mapToWorld(const MapPointMm& p_mm, double z_m) const;
   bool reached(const geometry_msgs::PoseStamped& target) const;
+  bool reached(const geometry_msgs::PoseStamped& target, double tol_xy, double tol_z) const;
   geometry_msgs::PoseStamped stepToward(const geometry_msgs::PoseStamped& from,
                                         const geometry_msgs::PoseStamped& to,
                                         double dt) const;
+  geometry_msgs::PoseStamped stepToward(const geometry_msgs::PoseStamped& from,
+                                        const geometry_msgs::PoseStamped& to,
+                                        double dt,
+                                        double max_xy_speed,
+                                        double max_z_speed) const;
   bool odomHealthy(const ros::Time& now) const;
 
   void enterPhase(Phase next, const std::string& reason);
@@ -95,6 +101,10 @@ private:
 
   void startServoDrop(int8_t servo_id, const ros::Time& now);
   void tickServo(const ros::Time& now);
+  MapPointMm servoDropOffsetMm(int8_t servo_id) const;
+  geometry_msgs::PoseStamped makeDropPose(const MapPointMm& base_mm, int8_t servo_id, double z_m) const;
+  void beginDropSequence(const MapPointMm& base_mm, int8_t servo_id, const ros::Time& now);
+  bool tickDropSequence(const ros::Time& now, double dt, double reach_xy_tol);
 
   // -----------------------------
   // RC解析（单独拎出来）
@@ -118,6 +128,7 @@ private:
   {
     HOVER,    // 在巡航高度悬停一段时间
     DESCEND,  // 原地下降到投放高度
+    STABILIZE,// 降到位后稳定悬停
     DROP,     // 执行投放（可投放1/2任意组合）
     ASCEND,   // 原地抬升回巡航高度
     DONE      // 本IMAGE处理完成
@@ -147,12 +158,15 @@ private:
   double prestream_time_s_{2.0};
   double max_xy_speed_{1.0};
   double max_z_speed_{0.6};
+  double goto_obstacle_max_xy_speed_{0.35};
+  double drop_reach_tol_xy_{0.10};
   double cruise_height_{1.4};
   double drop_height_{0.6};
   double ring_height_{1.6};
 
   double segment_timeout_s_{60.0};
-  double circle_duration_s_{10.0};
+  double circle_duration_s_{60.0};  // legacy compatibility; circle_laps is now the end condition
+  int circle_laps_{10};
   double circle_radius_m_{1.2};
   double circle_period_s_{10.0};
   double hover_qr_s_{3.0};
@@ -160,6 +174,7 @@ private:
   double hover_special_s_{3.0};
   double hover_ring_view_s_{5.0};
   double servo_open_time_s_{0.8};
+  double drop_stabilize_s_{2.0};
 
   double failsafe_hover_timeout_s_{10.0};
   double odom_timeout_s_{0.5};
@@ -178,6 +193,9 @@ private:
   MapPointMm land_mid_mm_{3300.0, 5300.0};
   MapPointMm land_left_mm_{1500.0, 1400.0};
   MapPointMm land_right_mm_{1500.0, 4600.0};
+  MapPointMm servo1_drop_offset_mm_{0.0, 0.0};
+  MapPointMm servo2_drop_offset_mm_{0.0, 0.0};
+  MapPointMm servo3_drop_offset_mm_{0.0, 0.0};
   std::string default_land_side_{"left"};
 
   Phase phase_{Phase::WAIT_FCU};
@@ -190,6 +208,7 @@ private:
   geometry_msgs::PoseStamped setpoint_;
   geometry_msgs::PoseStamped goal_pose_;
   geometry_msgs::PoseStamped hold_pose_;
+  int completed_circle_laps_{0};
 
   bool servo_1_done_{false};
   bool servo_2_done_{false};
@@ -215,6 +234,10 @@ private:
   // HOVER_IMAGE内部小状态机（仅RC模式用）
   ImageHoverStage image_hover_stage_{ImageHoverStage::HOVER};
   ros::Time image_hover_stage_start_time_;
+  int active_drop_servo_id_{0};
+  MapPointMm active_drop_base_mm_{0.0, 0.0};
+  MapPointMm active_drop_offset_mm_{0.0, 0.0};
+  geometry_msgs::PoseStamped active_drop_pose_;
 };
 
 #endif

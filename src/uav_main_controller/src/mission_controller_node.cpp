@@ -46,6 +46,8 @@ MissionController::MissionController(ros::NodeHandle& nh) : nh_(nh)
   nh_.param<double>("prestream_time_s", prestream_time_s_, prestream_time_s_);
   nh_.param<double>("max_xy_speed", max_xy_speed_, max_xy_speed_);
   nh_.param<double>("max_z_speed", max_z_speed_, max_z_speed_);
+  nh_.param<double>("goto_obstacle_max_xy_speed", goto_obstacle_max_xy_speed_, goto_obstacle_max_xy_speed_);
+  nh_.param<double>("drop_reach_tolerance_xy", drop_reach_tol_xy_, drop_reach_tol_xy_);
 
   nh_.param<double>("cruise_height", cruise_height_, cruise_height_);
   nh_.param<double>("drop_height", drop_height_, drop_height_);
@@ -53,6 +55,7 @@ MissionController::MissionController(ros::NodeHandle& nh) : nh_(nh)
 
   nh_.param<double>("segment_timeout_s", segment_timeout_s_, segment_timeout_s_);
   nh_.param<double>("circle_duration_s", circle_duration_s_, circle_duration_s_);
+  nh_.param<int>("circle_laps", circle_laps_, circle_laps_);
   nh_.param<double>("circle_radius_m", circle_radius_m_, circle_radius_m_);
   nh_.param<double>("circle_period_s", circle_period_s_, circle_period_s_);
   nh_.param<double>("hover_qr_s", hover_qr_s_, hover_qr_s_);
@@ -60,6 +63,7 @@ MissionController::MissionController(ros::NodeHandle& nh) : nh_(nh)
   nh_.param<double>("hover_special_s", hover_special_s_, hover_special_s_);
   nh_.param<double>("hover_ring_view_s", hover_ring_view_s_, hover_ring_view_s_);
   nh_.param<double>("servo_open_time_s", servo_open_time_s_, servo_open_time_s_);
+  nh_.param<double>("drop_stabilize_s", drop_stabilize_s_, drop_stabilize_s_);
 
   nh_.param<double>("failsafe_hover_timeout_s", failsafe_hover_timeout_s_, failsafe_hover_timeout_s_);
   nh_.param<double>("odom_timeout_s", odom_timeout_s_, odom_timeout_s_);
@@ -87,6 +91,12 @@ MissionController::MissionController(ros::NodeHandle& nh) : nh_(nh)
   land_mid_mm_ = loadPoint2(nh_, "land_mid_mm", land_mid_mm_.x_mm, land_mid_mm_.y_mm);
   land_left_mm_ = loadPoint2(nh_, "land_left_mm", land_left_mm_.x_mm, land_left_mm_.y_mm);
   land_right_mm_ = loadPoint2(nh_, "land_right_mm", land_right_mm_.x_mm, land_right_mm_.y_mm);
+  servo1_drop_offset_mm_ = loadPoint2(nh_, "servo1_drop_offset_mm", servo1_drop_offset_mm_.x_mm,
+                                      servo1_drop_offset_mm_.y_mm);
+  servo2_drop_offset_mm_ = loadPoint2(nh_, "servo2_drop_offset_mm", servo2_drop_offset_mm_.x_mm,
+                                      servo2_drop_offset_mm_.y_mm);
+  servo3_drop_offset_mm_ = loadPoint2(nh_, "servo3_drop_offset_mm", servo3_drop_offset_mm_.x_mm,
+                                      servo3_drop_offset_mm_.y_mm);
   nh_.param<std::string>("default_land_side", default_land_side_, default_land_side_);
 
   image_targets_mm_ = loadPointList2(nh_, "image_targets_mm");
@@ -96,8 +106,8 @@ MissionController::MissionController(ros::NodeHandle& nh) : nh_(nh)
     image_targets_mm_.clear();
     image_targets_mm_.push_back({5100.0, 4600.0});
     image_targets_mm_.push_back({3300.0, 4600.0});
-    image_targets_mm_.push_back({5100.0, 1400.0});
     image_targets_mm_.push_back({3300.0, 1400.0});
+    image_targets_mm_.push_back({5100.0, 1400.0});
   }
 
   state_sub_ = nh_.subscribe<mavros_msgs::State>("/mavros/state", 10, &MissionController::stateCallback, this);
@@ -115,6 +125,11 @@ MissionController::MissionController(ros::NodeHandle& nh) : nh_(nh)
   if (control_rate_ < 2.0) ROS_WARN("control_rate < 2Hz may break OFFBOARD");
   if (cruise_height_ < 1.2) ROS_WARN("cruise_height < 1.2m violates requirement");
   if (drop_height_ > 0.8) ROS_WARN("drop_height > 0.8m violates requirement");
+  if (circle_laps_ < 1)
+  {
+    ROS_WARN("circle_laps < 1, clamp to 1");
+    circle_laps_ = 1;
+  }
 
   phase_enter_time_ = ros::Time::now();
   segment_start_time_ = phase_enter_time_;
@@ -194,6 +209,94 @@ void MissionController::resetImageHoverStage()
 {
   image_hover_stage_ = ImageHoverStage::HOVER;
   image_hover_stage_start_time_ = ros::Time(0);
+  active_drop_servo_id_ = 0;
+  active_drop_base_mm_ = MapPointMm{};
+  active_drop_offset_mm_ = MapPointMm{};
+}
+
+MissionController::MapPointMm MissionController::servoDropOffsetMm(int8_t servo_id) const
+{
+  if (servo_id == 1) return servo1_drop_offset_mm_;
+  if (servo_id == 2) return servo2_drop_offset_mm_;
+  if (servo_id == 3) return servo3_drop_offset_mm_;
+  return MapPointMm{};
+}
+
+geometry_msgs::PoseStamped MissionController::makeDropPose(const MapPointMm& base_mm,
+                                                           int8_t servo_id,
+                                                           double z_m) const
+{
+  const MapPointMm offset = servoDropOffsetMm(servo_id);
+  const MapPointMm corrected{base_mm.x_mm + offset.x_mm, base_mm.y_mm + offset.y_mm};
+  const auto p = mapToWorld(corrected, z_m);
+  return makePose(p.x, p.y, p.z, 0.0);
+}
+
+void MissionController::beginDropSequence(const MapPointMm& base_mm, int8_t servo_id, const ros::Time& now)
+{
+  active_drop_servo_id_ = servo_id;
+  active_drop_base_mm_ = base_mm;
+  active_drop_offset_mm_ = servoDropOffsetMm(servo_id);
+  active_drop_pose_ = makeDropPose(base_mm, servo_id, drop_height_);
+  image_hover_stage_ = ImageHoverStage::DESCEND;
+  image_hover_stage_start_time_ = now;
+}
+
+bool MissionController::tickDropSequence(const ros::Time& now, double dt, double reach_xy_tol)
+{
+  if (active_drop_servo_id_ < 1 || active_drop_servo_id_ > 3) return true;
+
+  switch (image_hover_stage_)
+  {
+    case ImageHoverStage::DESCEND:
+    {
+      goal_pose_ = active_drop_pose_;
+      setpoint_ = stepToward(setpoint_, goal_pose_, dt);
+      publishSetpointNow(setpoint_);
+      if (!reached(goal_pose_, reach_xy_tol, reach_tol_z_)) return false;
+
+      image_hover_stage_ = ImageHoverStage::STABILIZE;
+      image_hover_stage_start_time_ = now;
+      return false;
+    }
+    case ImageHoverStage::STABILIZE:
+    {
+      publishSetpointNow(active_drop_pose_);
+      if ((now - image_hover_stage_start_time_).toSec() < drop_stabilize_s_) return false;
+
+      image_hover_stage_ = ImageHoverStage::DROP;
+      image_hover_stage_start_time_ = now;
+      return false;
+    }
+    case ImageHoverStage::DROP:
+    {
+      publishSetpointNow(active_drop_pose_);
+      startServoDrop(active_drop_servo_id_, now);
+      if (active_drop_servo_id_ == 1) servo_1_done_ = true;
+      if (active_drop_servo_id_ == 2) servo_2_done_ = true;
+      if (active_drop_servo_id_ == 3) servo_3_done_ = true;
+
+      image_hover_stage_ = ImageHoverStage::ASCEND;
+      image_hover_stage_start_time_ = now;
+      return false;
+    }
+    case ImageHoverStage::ASCEND:
+    {
+      goal_pose_ = makeDropPose(active_drop_base_mm_, active_drop_servo_id_, cruise_height_);
+      setpoint_ = stepToward(setpoint_, goal_pose_, dt);
+      publishSetpointNow(setpoint_);
+      if (!reached(goal_pose_, reach_xy_tol, reach_tol_z_)) return false;
+
+      image_hover_stage_ = ImageHoverStage::DONE;
+      active_drop_servo_id_ = 0;
+      return true;
+    }
+    case ImageHoverStage::DONE:
+      return true;
+    case ImageHoverStage::HOVER:
+    default:
+      return false;
+  }
 }
 
 bool MissionController::tickHoverImageRcMode(int image_index, const ros::Time& now, double dt)
@@ -226,52 +329,24 @@ bool MissionController::tickHoverImageRcMode(int image_index, const ros::Time& n
         return true;
       }
 
-      image_hover_stage_ = ImageHoverStage::DESCEND;
-      image_hover_stage_start_time_ = now;
+      beginDropSequence(image_targets_mm_.at(idx), need_drop1_here ? 1 : 2, now);
       return false;
     }
     case ImageHoverStage::DESCEND:
-    {
-      // 原地下降到投放高度（不允许边移动边下降）
-      const auto low = mapToWorld(image_targets_mm_.at(idx), drop_height_);
-      goal_pose_ = makePose(low.x, low.y, low.z, 0.0);
-      setpoint_ = stepToward(setpoint_, goal_pose_, dt);
-      publishSetpointNow(setpoint_);
-      if (!reached(goal_pose_)) return false;
-
-      image_hover_stage_ = ImageHoverStage::DROP;
-      image_hover_stage_start_time_ = now;
-      return false;
-    }
+    case ImageHoverStage::STABILIZE:
     case ImageHoverStage::DROP:
-    {
-      // 执行投放（允许投放1/2任意组合）
-      // 这里不再下发下降/上升目标，只维持当前位置（低高度点）
-      publishSetpointNow(setpoint_);
-
-      if (need_drop1_here)
-      {
-        startServoDrop(1, now);
-        servo_1_done_ = true;
-      }
-      if (need_drop2_here)
-      {
-        startServoDrop(2, now);
-        servo_2_done_ = true;
-      }
-
-      image_hover_stage_ = ImageHoverStage::ASCEND;
-      image_hover_stage_start_time_ = now;
-      return false;
-    }
     case ImageHoverStage::ASCEND:
     {
-      // 投放后必须先原地抬升回巡航高度，再进入后续移动
-      const auto high = mapToWorld(image_targets_mm_.at(idx), cruise_height_);
-      goal_pose_ = makePose(high.x, high.y, high.z, 0.0);
-      setpoint_ = stepToward(setpoint_, goal_pose_, dt);
-      publishSetpointNow(setpoint_);
-      if (!reached(goal_pose_)) return false;
+      if (!tickDropSequence(now, dt, drop_reach_tol_xy_)) return false;
+
+      const bool has_more_drop = (!servo_1_done_ && selected_drop1_ == image_index) ||
+                                 (!servo_2_done_ && selected_drop2_ == image_index);
+      if (has_more_drop)
+      {
+        image_hover_stage_ = ImageHoverStage::HOVER;
+        image_hover_stage_start_time_ = now;
+        return false;
+      }
 
       image_hover_stage_ = ImageHoverStage::DONE;
       return true;
@@ -377,16 +452,30 @@ MissionController::WorldPoint MissionController::mapToWorld(const MapPointMm& p_
 
 bool MissionController::reached(const geometry_msgs::PoseStamped& target) const
 {
+  return reached(target, reach_tol_xy_, reach_tol_z_);
+}
+
+bool MissionController::reached(const geometry_msgs::PoseStamped& target, double tol_xy, double tol_z) const
+{
   const double dx = target.pose.position.x - current_odom_.pose.pose.position.x;
   const double dy = target.pose.position.y - current_odom_.pose.pose.position.y;
   const double dz = target.pose.position.z - current_odom_.pose.pose.position.z;
   const double dxy = std::sqrt(dx * dx + dy * dy);
-  return (dxy <= reach_tol_xy_) && (std::fabs(dz) <= reach_tol_z_);
+  return (dxy <= tol_xy) && (std::fabs(dz) <= tol_z);
 }
 
 geometry_msgs::PoseStamped MissionController::stepToward(const geometry_msgs::PoseStamped& from,
                                                         const geometry_msgs::PoseStamped& to,
                                                         double dt) const
+{
+  return stepToward(from, to, dt, max_xy_speed_, max_z_speed_);
+}
+
+geometry_msgs::PoseStamped MissionController::stepToward(const geometry_msgs::PoseStamped& from,
+                                                        const geometry_msgs::PoseStamped& to,
+                                                        double dt,
+                                                        double max_xy_speed,
+                                                        double max_z_speed) const
 {
   geometry_msgs::PoseStamped out = from;
   const double dx = to.pose.position.x - from.pose.position.x;
@@ -394,8 +483,8 @@ geometry_msgs::PoseStamped MissionController::stepToward(const geometry_msgs::Po
   const double dz = to.pose.position.z - from.pose.position.z;
 
   const double dist_xy = std::sqrt(dx * dx + dy * dy);
-  const double max_step_xy = std::max(0.0, max_xy_speed_) * dt;
-  const double max_step_z = std::max(0.0, max_z_speed_) * dt;
+  const double max_step_xy = std::max(0.0, max_xy_speed) * dt;
+  const double max_step_z = std::max(0.0, max_z_speed) * dt;
 
   if (dist_xy > 1e-6)
   {
@@ -443,6 +532,7 @@ void MissionController::enterPhase(Phase next, const std::string& reason)
   segment_start_time_ = phase_enter_time_;
   // HOVER_IMAGE使用内部小状态机：每次进入新的Phase都重置，避免跨IMAGE串状态
   resetImageHoverStage();
+  if (next == Phase::CIRCLE_OBSTACLE) completed_circle_laps_ = 0;
   publishMissionState(reason);
 }
 
@@ -649,11 +739,11 @@ void MissionController::tick(const ros::Time& now, double dt)
     {
       // Safety: do NOT fly to the obstacle center.
       // Fly to a nearby entry point on the circle with radius circle_radius_m_.
-      // Use the "east" point (angle=0) as the default entry point: (cx + r, cy).
+      // Use the left point (angle=pi) as the entry point: (cx - r, cy), so leaving to QRCODE is away from obstacle.
       const auto c = mapToWorld(obstacle_mm_, cruise_height_);
       final_pose_ = makePose(c.x - circle_radius_m_, c.y, c.z, 0.0);
       goal_pose_ = final_pose_;
-      setpoint_ = stepToward(setpoint_, goal_pose_, dt);
+      setpoint_ = stepToward(setpoint_, goal_pose_, dt, goto_obstacle_max_xy_speed_, max_z_speed_);
       publishSetpointNow(setpoint_);
       if (reached(goal_pose_)) enterPhase(Phase::CIRCLE_OBSTACLE, "CIRCLE_OBSTACLE");
       break;
@@ -662,15 +752,36 @@ void MissionController::tick(const ros::Time& now, double dt)
     {
       const auto c = mapToWorld(obstacle_mm_, cruise_height_);
       const double t = (now - phase_enter_time_).toSec();
-      const double w = 2.0 * kPi / std::max(0.1, circle_period_s_);
-      const double angle = w * t;
+      const double desired_w = 2.0 * kPi / std::max(0.1, circle_period_s_);
+      const double max_w = std::max(0.1, max_xy_speed_) / std::max(0.1, circle_radius_m_);
+      const double w = std::min(desired_w, max_w);
+      const double start_angle = kPi;  // match GOTO_OBSTACLE entry point: (cx-r, cy)
+      const double progress = w * t;
+      const int lap_index = static_cast<int>(std::floor(progress / (2.0 * kPi)));
+      while (completed_circle_laps_ < std::min(lap_index, circle_laps_))
+      {
+        ++completed_circle_laps_;
+        ROS_INFO("CIRCLE_OBSTACLE lap %d/%d", completed_circle_laps_, circle_laps_);
+      }
+
+      if (completed_circle_laps_ >= circle_laps_)
+      {
+        // 已完成指定圈数后，不再继续绕圈；先回到左侧出圈点，再进入GOTO_QRCODE。
+        // 这样从障碍左侧离开，后续飞向二维码点时不会横穿障碍物。
+        goal_pose_ = makePose(c.x - circle_radius_m_, c.y, cruise_height_, start_angle + kHalfPi);
+        setpoint_ = stepToward(setpoint_, goal_pose_, dt);
+        publishSetpointNow(setpoint_);
+        if (reached(goal_pose_)) enterPhase(Phase::GOTO_QRCODE, "GOTO_QRCODE");
+        break;
+      }
+
+      const double angle = start_angle + progress;
       goal_pose_ = makePose(c.x + circle_radius_m_ * std::cos(angle),
                             c.y + circle_radius_m_ * std::sin(angle),
                             cruise_height_,
                             angle + kHalfPi);
       setpoint_ = stepToward(setpoint_, goal_pose_, dt);
       publishSetpointNow(setpoint_);
-      if (t >= circle_duration_s_) enterPhase(Phase::GOTO_QRCODE, "GOTO_QRCODE");
       break;
     }
     case Phase::GOTO_QRCODE:
@@ -827,21 +938,18 @@ void MissionController::tick(const ros::Time& now, double dt)
     {
       if (!servo_3_done_)
       {
-        const auto low = mapToWorld(special_target_mm_, drop_height_);
-        goal_pose_ = makePose(low.x, low.y, low.z, 0.0);
-        setpoint_ = stepToward(setpoint_, goal_pose_, dt);
-        publishSetpointNow(setpoint_);
-        if (reached(goal_pose_))
+        if (image_hover_stage_ == ImageHoverStage::HOVER)
         {
-          startServoDrop(3, now);
-          servo_3_done_ = true;
-          segment_start_time_ = now;
+          beginDropSequence(special_target_mm_, 3, now);
         }
+        if (!tickDropSequence(now, dt, drop_reach_tol_xy_)) break;
+
+        phase_enter_time_ = now;
+        segment_start_time_ = now;
         break;
       }
 
-      const auto p = mapToWorld(special_target_mm_, cruise_height_);
-      goal_pose_ = makePose(p.x, p.y, p.z, 0.0);
+      goal_pose_ = makeDropPose(special_target_mm_, 3, cruise_height_);
       setpoint_ = stepToward(setpoint_, goal_pose_, dt);
       publishSetpointNow(setpoint_);
       if ((now - phase_enter_time_).toSec() >= hover_special_s_) enterPhase(Phase::GOTO_RING_VIEW, "GOTO_RING_VIEW");
@@ -899,7 +1007,7 @@ void MissionController::tick(const ros::Time& now, double dt)
     }
     case Phase::LAND:
     {
-      publishSetpointNow(setpoint_);
+      //publishSetpointNow(setpoint_);
       setMode(land_mode);
       if (!current_state_.armed) enterPhase(Phase::DONE, "DONE");
       break;
