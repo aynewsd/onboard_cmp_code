@@ -19,8 +19,8 @@ ring_height: 1.6
 # Mission timing (seconds)
 segment_timeout_s: 60.0           # per segment travel/hold timeout
 circle_duration_s: 60.0           # obstacle circling duration (test: 60s, real: 300s)
-circle_radius_m: 1.2              # obstacle circling radius
-circle_period_s: 10.0             # seconds per full circle
+circle_radius_m: 1.0              # obstacle circling radius
+circle_period_s: 6.0             # seconds per full circle
 hover_qr_s: 3.0
 hover_image_s: 3.0
 hover_special_s: 3.0

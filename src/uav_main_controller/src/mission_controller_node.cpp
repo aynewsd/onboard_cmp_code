@@ -651,7 +651,7 @@ void MissionController::tick(const ros::Time& now, double dt)
       // Fly to a nearby entry point on the circle with radius circle_radius_m_.
       // Use the "east" point (angle=0) as the default entry point: (cx + r, cy).
       const auto c = mapToWorld(obstacle_mm_, cruise_height_);
-      final_pose_ = makePose(c.x + circle_radius_m_, c.y, c.z, 0.0);
+      final_pose_ = makePose(c.x - circle_radius_m_, c.y, c.z, 0.0);
       goal_pose_ = final_pose_;
       setpoint_ = stepToward(setpoint_, goal_pose_, dt);
       publishSetpointNow(setpoint_);
